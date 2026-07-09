@@ -13,6 +13,28 @@ from egg_counter.models import Detection
 logger = logging.getLogger(__name__)
 
 
+def _bbox_overlap_ratio(
+    box_a: tuple[int, int, int, int],
+    box_b: tuple[int, int, int, int],
+) -> float:
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+        return 0.0
+
+    intersection = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    smaller_area = min(area_a, area_b)
+    if smaller_area <= 0:
+        return 0.0
+    return intersection / smaller_area
+
+
 class InferenceBackend(ABC):
     @abstractmethod
     def detect(self, frame: np.ndarray) -> list[Detection]:
@@ -112,6 +134,7 @@ class ClassicBackend(InferenceBackend):
         else:
             candidates.extend(reference_candidates)
             candidates.extend(self._detect_by_ellipse(frame, hole_radius))
+            candidates.extend(self._detect_by_brown_egg_color(frame, hole_radius))
             if len(candidates) < 2:
                 candidates.extend(self._detect_by_low_contrast_egg(frame, hole_radius))
 
@@ -159,6 +182,30 @@ class ClassicBackend(InferenceBackend):
             return 12.5
         return float(np.median(circles[0, :, 2]))
 
+    def _hole_diameter(self, hole_radius: float) -> float:
+        return max(18.0, hole_radius * 2.0)
+
+    def _min_egg_dimension(self, hole_radius: float) -> float:
+        """Ovo precisa ser visivelmente maior que o furo da esteira."""
+        return self._hole_diameter(hole_radius) * 1.55
+
+    def _is_egg_sized_bbox(
+        self,
+        bbox: tuple[int, int, int, int],
+        hole_radius: float,
+    ) -> bool:
+        x1, y1, x2, y2 = bbox
+        width = x2 - x1
+        height = y2 - y1
+        if width <= 0 or height <= 0:
+            return False
+
+        hole_diameter = self._hole_diameter(hole_radius)
+        min_required = self._min_egg_dimension(hole_radius)
+        short_side = min(width, height)
+        long_side = max(width, height)
+        return short_side >= min_required and long_side >= hole_diameter * 1.65
+
     def _detect_by_reference_diff(
         self,
         frame: np.ndarray,
@@ -196,7 +243,12 @@ class ClassicBackend(InferenceBackend):
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
-        min_area = max(650.0, np.pi * (hole_radius * 1.45) ** 2)
+        min_area = max(
+            900.0,
+            np.pi * (self._min_egg_dimension(hole_radius) / 2.0) ** 2,
+        )
+        min_box_width = int(self._min_egg_dimension(hole_radius))
+        min_box_height = int(self._hole_diameter(hole_radius) * 1.35)
 
         for contour in contours:
             area = cv2.contourArea(contour)
@@ -204,7 +256,7 @@ class ClassicBackend(InferenceBackend):
                 continue
 
             x, y, box_width, box_height = cv2.boundingRect(contour)
-            if box_width < 40 or box_height < 28:
+            if box_width < min_box_width or box_height < min_box_height:
                 continue
             if box_width > width * 0.45 or box_height > height * 0.55:
                 continue
@@ -257,7 +309,7 @@ class ClassicBackend(InferenceBackend):
 
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
         margin = 12
-        min_axis = hole_radius * 1.5
+        min_axis = self._min_egg_dimension(hole_radius)
         max_axis = hole_radius * 9.0
         candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
 
@@ -266,7 +318,8 @@ class ClassicBackend(InferenceBackend):
                 continue
 
             area = cv2.contourArea(contour)
-            if area < 500 or area > 4200:
+            min_area = max(700.0, np.pi * (self._min_egg_dimension(hole_radius) / 2.2) ** 2)
+            if area < min_area or area > 4200:
                 continue
 
             try:
@@ -284,6 +337,8 @@ class ClassicBackend(InferenceBackend):
                 continue
 
             x, y, box_width, box_height = cv2.boundingRect(contour)
+            if not self._is_egg_sized_bbox((x, y, x + box_width, y + box_height), hole_radius):
+                continue
             if (
                 x < margin
                 or y < margin
@@ -329,7 +384,7 @@ class ClassicBackend(InferenceBackend):
 
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
         margin = 20
-        min_axis = hole_radius * 2.0
+        min_axis = self._min_egg_dimension(hole_radius)
         max_axis = hole_radius * 10.0
         candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
 
@@ -338,7 +393,8 @@ class ClassicBackend(InferenceBackend):
                 continue
 
             area = cv2.contourArea(contour)
-            if area < 200 or area > 12000:
+            min_area = max(650.0, np.pi * (self._min_egg_dimension(hole_radius) / 2.0) ** 2)
+            if area < min_area or area > 12000:
                 continue
 
             try:
@@ -359,6 +415,8 @@ class ClassicBackend(InferenceBackend):
             y1 = int(center_y - minor_axis / 2 - 4)
             x2 = int(center_x + major_axis / 2 + 4)
             y2 = int(center_y + minor_axis / 2 + 4)
+            if not self._is_egg_sized_bbox((x1, y1, x2, y2), hole_radius):
+                continue
             if x1 < margin or y1 < margin or x2 > width - margin or y2 > height - margin:
                 continue
 
@@ -374,6 +432,215 @@ class ClassicBackend(InferenceBackend):
 
         return candidates
 
+    def _detect_by_brown_egg_color(
+        self,
+        frame: np.ndarray,
+        hole_radius: float,
+    ) -> list[tuple[tuple[int, int, int, int], float, float]]:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        height, width = gray.shape[:2]
+        color_mask = (
+            (hsv[:, :, 0] >= 5)
+            & (hsv[:, :, 0] <= 62)
+            & (hsv[:, :, 1] >= 18)
+            & (hsv[:, :, 2] >= 85)
+            & (gray > 95)
+        ).astype(np.uint8) * 255
+        color_mask = cv2.morphologyEx(
+            color_mask,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        )
+        color_mask = cv2.morphologyEx(
+            color_mask,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (max(9, int(hole_radius * 1.2)) | 1, max(11, int(hole_radius * 2.0)) | 1),
+            ),
+            iterations=1,
+        )
+
+        # Ovos marrons neste video aparecem nas colunas da esquerda da esteira.
+        lane_mask = color_mask[:, : max(1, int(width * 0.55))].copy()
+        lane_mask = cv2.erode(
+            lane_mask,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+            iterations=2,
+        )
+        candidates = self._collect_brown_candidates(
+            lane_mask,
+            hole_radius,
+            gray,
+            hsv,
+            height,
+            width,
+            x_offset=0,
+        )
+        return candidates
+
+    def _collect_brown_candidates(
+        self,
+        color_mask: np.ndarray,
+        hole_radius: float,
+        gray: np.ndarray,
+        hsv: np.ndarray,
+        height: int,
+        width: int,
+        x_offset: int,
+    ) -> list[tuple[tuple[int, int, int, int], float, float]]:
+        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
+        min_area = max(900.0, np.pi * (self._min_egg_dimension(hole_radius) / 2.0) ** 2)
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < min_area:
+                continue
+
+            x, y, box_width, box_height = cv2.boundingRect(contour)
+            bbox = (x_offset + x, y, x_offset + x + box_width, y + box_height)
+            if box_height > height * 0.4 or box_width > width * 0.25:
+                candidates.extend(
+                    self._split_brown_blob_candidates(
+                        color_mask,
+                        (x, y, x + box_width, y + box_height),
+                        hole_radius,
+                        gray,
+                        hsv,
+                        min_area,
+                        x_offset=x_offset,
+                    )
+                )
+                continue
+
+            candidate = self._brown_bbox_candidate(
+                bbox,
+                area,
+                hole_radius,
+                gray,
+                hsv,
+                width,
+                height,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+        return candidates
+
+    def _split_brown_blob_candidates(
+        self,
+        color_mask: np.ndarray,
+        bbox: tuple[int, int, int, int],
+        hole_radius: float,
+        gray: np.ndarray,
+        hsv: np.ndarray,
+        min_area: float,
+        x_offset: int = 0,
+    ) -> list[tuple[tuple[int, int, int, int], float, float]]:
+        x1, y1, x2, y2 = bbox
+        roi_mask = color_mask[y1:y2, x1:x2]
+        dist = cv2.distanceTransform(roi_mask, cv2.DIST_L2, 5)
+        candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
+        frame_height, frame_width = gray.shape[:2]
+
+        if dist.max() > 0:
+            _, sure_fg = cv2.threshold(dist, 0.42 * dist.max(), 255, 0)
+            sure_fg = sure_fg.astype(np.uint8)
+            sure_fg = cv2.erode(
+                sure_fg,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                iterations=1,
+            )
+            sub_contours, _ = cv2.findContours(sure_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for contour in sub_contours:
+                area = cv2.contourArea(contour)
+                if area < min_area * 0.55:
+                    continue
+
+                sx, sy, sw, sh = cv2.boundingRect(contour)
+                sub_bbox = (x_offset + x1 + sx, y1 + sy, x_offset + x1 + sx + sw, y1 + sy + sh)
+                candidate = self._brown_bbox_candidate(
+                    sub_bbox,
+                    area,
+                    hole_radius,
+                    gray,
+                    hsv,
+                    frame_width,
+                    frame_height,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+
+        max_egg_height = self._min_egg_dimension(hole_radius) * 1.75
+        candidates = [
+            candidate
+            for candidate in candidates
+            if (candidate[0][3] - candidate[0][1]) <= max_egg_height
+        ]
+
+        if len(candidates) < 2 and (y2 - y1) > self._min_egg_dimension(hole_radius) * 2.0:
+            mid_y = (y1 + y2) // 2
+            for sub_bbox in ((x_offset + x1, y1, x_offset + x2, mid_y), (x_offset + x1, mid_y, x_offset + x2, y2)):
+                sub_area = float((sub_bbox[2] - sub_bbox[0]) * (sub_bbox[3] - sub_bbox[1]) * 0.55)
+                candidate = self._brown_bbox_candidate(
+                    sub_bbox,
+                    sub_area,
+                    hole_radius,
+                    gray,
+                    hsv,
+                    frame_width,
+                    frame_height,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+
+        return candidates
+
+    def _brown_bbox_candidate(
+        self,
+        bbox: tuple[int, int, int, int],
+        area: float,
+        hole_radius: float,
+        gray: np.ndarray,
+        hsv: np.ndarray,
+        width: int,
+        height: int,
+    ) -> tuple[tuple[int, int, int, int], float, float] | None:
+        x1, y1, x2, y2 = bbox
+        box_width = x2 - x1
+        box_height = y2 - y1
+        if not self._is_egg_sized_bbox(bbox, hole_radius):
+            return None
+        if box_width > width * 0.28 or box_height > height * 0.45:
+            return None
+
+        roi_gray = gray[y1:y2, x1:x2]
+        roi_hsv = hsv[y1:y2, x1:x2]
+        if not self._has_egg_color_signature(roi_gray, roi_hsv):
+            return None
+
+        aspect = box_width / max(1.0, box_height)
+        if aspect < 0.55 or aspect > 1.9:
+            return None
+
+        confidence = min(0.94, 0.72 + min(area, 3200) / 5000)
+        return (bbox, confidence, float(box_width * box_height))
+
+    def _has_egg_color_signature(
+        self,
+        roi_gray: np.ndarray,
+        roi_hsv: np.ndarray,
+    ) -> bool:
+        gray_mean = float(roi_gray.mean())
+        saturation_mean = float(roi_hsv[:, :, 1].mean())
+        hue_mean = float(roi_hsv[:, :, 0].mean())
+        is_white_egg = saturation_mean < 75 and gray_mean > 140
+        is_brown_egg = 5 <= hue_mean <= 62 and saturation_mean >= 18 and 95 < gray_mean < 210
+        return is_white_egg or is_brown_egg
+
     def _merge_candidates(
         self,
         candidates: list[tuple[tuple[int, int, int, int], float, float]],
@@ -385,10 +652,15 @@ class ClassicBackend(InferenceBackend):
         for bbox, confidence, score in sorted(candidates, key=lambda item: item[2], reverse=True):
             center_x = (bbox[0] + bbox[2]) / 2
             center_y = (bbox[1] + bbox[3]) / 2
+            bbox_width = bbox[2] - bbox[0]
+            bbox_height = bbox[3] - bbox[1]
             if any(
-                (center_x - other_center_x) ** 2 + (center_y - other_center_y) ** 2
-                <= min_distance**2
-                for _, _, _, other_center_x, other_center_y in kept
+                (
+                    (center_x - other_center_x) ** 2 + (center_y - other_center_y) ** 2
+                    <= min_distance**2
+                )
+                or _bbox_overlap_ratio(bbox, other_bbox) >= 0.35
+                for other_bbox, _, _, other_center_x, other_center_y in kept
             ):
                 continue
             kept.append((bbox, confidence, score, center_x, center_y))
@@ -409,13 +681,51 @@ class ClassicBackend(InferenceBackend):
         bbox: tuple[int, int, int, int],
         hole_radius: float,
     ) -> bool:
+        if not self._is_egg_sized_bbox(bbox, hole_radius):
+            return False
         if self._is_hollow_belt_hole(frame, bbox, hole_radius):
             return False
         if self._is_on_irregular_belt(frame, bbox, hole_radius):
             return False
         if self._passes_low_contrast_egg_shape(frame, bbox, hole_radius):
             return True
+        if self._passes_brown_egg_shape(frame, bbox, hole_radius):
+            return True
         return self._is_filled_egg_blob(frame, bbox, hole_radius)
+
+    def _passes_brown_egg_shape(
+        self,
+        frame: np.ndarray,
+        bbox: tuple[int, int, int, int],
+        hole_radius: float,
+    ) -> bool:
+        x1, y1, x2, y2 = bbox
+        roi_gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        roi_hsv = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+        if not self._is_egg_sized_bbox(bbox, hole_radius):
+            return False
+        if not self._has_egg_color_signature(roi_gray, roi_hsv):
+            return False
+
+        margin_y = max(2, roi_gray.shape[0] // 5)
+        margin_x = max(2, roi_gray.shape[1] // 5)
+        center_gray = roi_gray[margin_y:-margin_y, margin_x:-margin_x]
+        border_mask = np.ones(roi_gray.shape, dtype=np.uint8)
+        border_mask[margin_y:-margin_y, margin_x:-margin_x] = 0
+        border_gray = roi_gray[border_mask == 1]
+        if center_gray.size == 0 or border_gray.size == 0:
+            return False
+
+        center_mean = float(center_gray.mean())
+        border_mean = float(border_gray.mean())
+        if center_mean < border_mean - 20.0 and center_mean < 130.0:
+            return False
+
+        aspect = (x2 - x1) / max(1.0, y2 - y1)
+        if aspect < 0.55 or aspect > 1.9:
+            return False
+
+        return float(center_gray.std()) <= 52.0
 
     def _passes_low_contrast_egg_shape(
         self,
@@ -430,8 +740,7 @@ class ClassicBackend(InferenceBackend):
         if height < 12 or width < 12:
             return False
 
-        min_egg_dim = max(42.0, hole_radius * 3.0)
-        if min(height, width) < min_egg_dim:
+        if not self._is_egg_sized_bbox(bbox, hole_radius):
             return False
 
         sat_mean = float(hsv[:, :, 1].mean())
@@ -469,7 +778,7 @@ class ClassicBackend(InferenceBackend):
 
         center_mean = float(center_gray.mean())
         border_mean = float(border_gray.mean())
-        if center_mean < border_mean - 35.0:
+        if center_mean < border_mean - 20.0:
             return True
 
         max_hole_dim = max(40.0, hole_radius * 3.4)
@@ -507,6 +816,21 @@ class ClassicBackend(InferenceBackend):
         bbox: tuple[int, int, int, int],
         hole_radius: float,
     ) -> bool:
+        if self._is_egg_sized_bbox(bbox, hole_radius):
+            x1, y1, x2, y2 = bbox
+            roi_gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+            roi_hsv = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+            if self._has_egg_color_signature(roi_gray, roi_hsv):
+                margin_y = max(2, roi_gray.shape[0] // 5)
+                margin_x = max(2, roi_gray.shape[1] // 5)
+                center_gray = roi_gray[margin_y:-margin_y, margin_x:-margin_x]
+                border_mask = np.ones(roi_gray.shape, dtype=np.uint8)
+                border_mask[margin_y:-margin_y, margin_x:-margin_x] = 0
+                border_gray = roi_gray[border_mask == 1]
+                if center_gray.size > 0 and border_gray.size > 0:
+                    if float(roi_gray.std()) > 8.0 and float(center_gray.mean()) >= float(border_gray.mean()) - 12.0:
+                        return False
+
         height, width = frame.shape[:2]
         center_x = (bbox[0] + bbox[2]) // 2
         center_y = (bbox[1] + bbox[3]) // 2
@@ -613,12 +937,14 @@ class ClassicBackend(InferenceBackend):
         saturation_mean = float(center_sat.mean())
         hue_mean = float(center_hue.mean())
 
-        if center_mean < border_mean - 35.0:
+        if center_mean < border_mean - 20.0:
             return False
 
         is_white_egg = saturation_mean < 80 and center_mean > 125
-        is_brown_egg = 5 <= hue_mean <= 35 and saturation_mean > 22 and 75 < center_mean < 205
-        max_center_std = 42.0 if is_brown_egg else 38.0
+        is_brown_egg = 5 <= hue_mean <= 62 and saturation_mean >= 18 and 95 < center_mean < 210
+        if is_brown_egg and center_mean < border_mean - 8.0:
+            return False
+        max_center_std = 48.0 if is_brown_egg else 38.0
         if center_std > max_center_std:
             return False
 
@@ -634,12 +960,7 @@ class ClassicBackend(InferenceBackend):
         if center_mean > border_mean + 15 and saturation_mean < border_sat_mean * 0.75:
             return False
 
-        min_dim = min(height, width)
-        min_egg_dim = max(int(hole_radius * 2.8), 40)
-        if min_dim < min_egg_dim:
-            return False
-
-        return True
+        return self._is_egg_sized_bbox(bbox, hole_radius)
 
 
 class Detector:

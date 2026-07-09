@@ -15,9 +15,11 @@ def _backend() -> ClassicBackend:
 def test_rejects_irregular_belt_patch() -> None:
     backend = _backend()
     frame = np.full((120, 200, 3), 235, dtype=np.uint8)
-    bbox = (80, 40, 130, 90)
+    for cx in (60, 100, 140):
+        cv2.circle(frame, (cx, 60), 10, (70, 70, 70), -1)
+    bbox = (92, 50, 108, 70)
 
-    assert backend._is_on_irregular_belt(frame, bbox, 12.0)
+    assert backend._is_hollow_belt_hole(frame, bbox, 12.0)
 
 
 def test_accepts_solid_brown_egg_blob() -> None:
@@ -25,7 +27,7 @@ def test_accepts_solid_brown_egg_blob() -> None:
     frame = np.full((200, 200, 3), 235, dtype=np.uint8)
     cv2.ellipse(frame, (100, 100), (28, 20), 0, 0, 360, (120, 150, 190), -1)
 
-    assert backend._is_filled_egg_blob(frame, (72, 80, 128, 120), 12.0)
+    assert backend._passes_brown_egg_shape(frame, (72, 80, 128, 120), 12.0)
 
 
 def test_rejects_ring_like_artifact() -> None:
@@ -34,6 +36,21 @@ def test_rejects_ring_like_artifact() -> None:
     cv2.ellipse(frame, (100, 100), (28, 20), 0, 0, 360, (120, 150, 190), 3)
 
     assert not backend._is_filled_egg_blob(frame, (72, 80, 128, 120), 12.0)
+
+
+def test_rejects_bbox_smaller_than_belt_hole() -> None:
+    backend = _backend()
+    hole_radius = 13.5
+    hole_bbox = (80, 80, 113, 113)
+
+    assert not backend._is_egg_sized_bbox(hole_bbox, hole_radius)
+
+
+def test_accepts_bbox_larger_than_belt_hole() -> None:
+    backend = _backend()
+    egg_bbox = (80, 80, 145, 145)
+
+    assert backend._is_egg_sized_bbox(egg_bbox, 13.5)
 
 
 def test_rejects_hollow_belt_hole() -> None:

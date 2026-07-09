@@ -20,3 +20,10 @@ line:
   x2: 820
   y2: 239
   direction: bottom_to_top
+
+# Faixa central da esteira (furos/emenda geram falso positivo)
+exclude_zones:
+  - x: 355
+    y: 0
+    width: 130
+    height: 478
