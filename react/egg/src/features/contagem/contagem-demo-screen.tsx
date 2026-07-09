@@ -6,6 +6,7 @@ import {
   CalendarCheck,
   Camera,
   ChevronDown,
+  Clock,
   Egg,
   FileVideo,
   Layers,
@@ -141,17 +142,17 @@ type InfoCardProps = {
 function InfoCard({ title, value, icon, accent = "default", children }: InfoCardProps) {
   const valueColor =
     accent === "success"
-      ? "text-emerald-600"
+      ? "text-value-success"
       : accent === "danger"
-        ? "text-rose-600"
-        : "text-slate-800";
+        ? "text-value-danger"
+        : "text-[var(--rovah-text)]";
 
   return (
-    <article className="info-card-3d flex min-h-[72px] flex-col items-center justify-center rounded-lg px-2 py-1.5 text-center">
-      <div className="mb-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-sky-200 bg-sky-50 text-sky-600 [&_svg]:h-3.5 [&_svg]:w-3.5">
+    <article className="info-card-3d flex min-h-[72px] flex-col items-center justify-center px-2 py-1.5 text-center">
+      <div className="info-card-icon mb-0.5 flex h-6 w-6 items-center justify-center rounded-full [&_svg]:h-3.5 [&_svg]:w-3.5">
         {icon}
       </div>
-      <div className="text-[9px] font-semibold uppercase leading-tight tracking-wide text-slate-500">
+      <div className="text-[9px] font-semibold uppercase leading-tight tracking-wide text-[var(--rovah-text-muted)]">
         {title}
       </div>
       {children ?? (
@@ -172,15 +173,15 @@ function VideoDurationOverlay({
 
   return (
     <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded-md border border-white/20 bg-slate-950/85 px-2 py-1 shadow-lg backdrop-blur-sm">
-      <div className="flex items-center justify-between gap-2 font-mono text-[10px] text-slate-200">
+      <div className="flex items-center justify-between gap-2 text-[10px] text-slate-200">
         <span>Vídeo</span>
         <span className="font-semibold text-white">
           {formatVideoTime(currentTime)} / {formatVideoTime(duration)}
         </span>
       </div>
-      <div className="mt-1 h-1 overflow-hidden rounded-full bg-slate-700">
+      <div className="mt-1 h-1 overflow-hidden rounded-full bg-[var(--rovah-dark-soft)]">
         <div
-          className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-500 transition-[width] duration-300"
+          className="video-progress-bar h-full rounded-full transition-[width] duration-300"
           style={{ width: `${progress}%` }}
         />
       </div>
@@ -201,9 +202,13 @@ function DateTimeCard({ dateTime }: { dateTime: Date }) {
   });
 
   return (
-    <div className="hidden min-w-[108px] flex-col items-start leading-tight sm:flex">
-      <span className="font-mono text-[10px] font-semibold text-slate-700">{date}</span>
-      <span className="font-mono text-xs font-bold text-slate-900">{time}</span>
+    <div className="datetime-chip shrink-0 leading-tight">
+      <span className="datetime-chip-label flex items-center gap-1">
+        <Clock className="h-3 w-3" strokeWidth={2} />
+        Tempo real
+      </span>
+      <span className="datetime-chip-date">{date}</span>
+      <span className="datetime-chip-time">{time}</span>
     </div>
   );
 }
@@ -255,21 +260,21 @@ function ControlButton({
 function MenuItem({ icon, label, onClick, disabled, tone = "default" }: MenuItemProps) {
   const toneClass =
     tone === "primary"
-      ? "text-sky-700 hover:bg-sky-50"
+      ? "text-[var(--rovah-green-dark)] hover:bg-[rgba(155,203,59,0.12)]"
       : tone === "success"
-        ? "text-emerald-700 hover:bg-emerald-50"
+        ? "text-[var(--rovah-green-dark)] hover:bg-[rgba(155,203,59,0.12)]"
         : tone === "danger"
-          ? "text-rose-700 hover:bg-rose-50"
-          : "text-slate-700 hover:bg-slate-50";
+          ? "text-red-600 hover:bg-red-50"
+          : "text-[var(--rovah-text)] hover:bg-[var(--rovah-bg)]";
 
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-45 ${toneClass}`}
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-45 ${toneClass}`}
     >
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-sky-600">
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--rovah-border)] bg-white text-[var(--rovah-green-dark)] [&_svg]:h-3.5 [&_svg]:w-3.5">
         {icon}
       </span>
       <span>{label}</span>
@@ -1159,29 +1164,115 @@ export function ContagemDemoScreen() {
   }, []);
 
   return (
-    <div className="mx-auto flex h-dvh max-h-dvh w-full max-w-7xl flex-col gap-1.5 overflow-hidden px-3 py-2 md:px-4">
-      <header className="relative shrink-0 overflow-hidden border-b border-slate-200/80 pb-2 pt-1">
+    <div className="contador-shell mx-auto flex h-dvh max-h-dvh w-full max-w-7xl flex-col gap-1.5 overflow-hidden px-3 py-2 md:px-4">
+      <header className="contador-header relative z-50 shrink-0 overflow-visible rounded-lg pb-1.5 pt-1.5">
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.1),transparent_60%)]"
-        />
-        <div
-          aria-hidden
-          className="contador-title-glow pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/70 to-transparent"
+          className="contador-header-glow pointer-events-none absolute inset-x-0 bottom-0 h-px opacity-60"
         />
 
-        <div className="relative flex items-center justify-between gap-2 px-1">
-          <DateTimeCard dateTime={now} />
+        <div className="relative flex items-center gap-2 px-2">
+          <div className="flex shrink-0 items-stretch gap-1.5">
+            <DateTimeCard dateTime={now} />
 
-          <div className="flex min-w-0 flex-1 flex-col items-center gap-0.5 px-2">
-            <div className="flex items-center gap-2">
-              <ScanEye className="h-4 w-4 shrink-0 text-cyan-500" strokeWidth={1.75} />
-              <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.32em] text-cyan-600/90">
+            <div ref={menuRef} className="relative z-50">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((open) => !open)}
+                className={`menu-trigger flex h-full min-h-[52px] flex-col items-center justify-center gap-0.5 px-2.5 ${menuOpen ? "menu-trigger-open" : ""}`}
+              >
+                <Menu className="h-4 w-4 text-[var(--rovah-green)]" strokeWidth={1.75} />
+                <span className="text-[9px] font-bold uppercase tracking-wide">
+                  Menu
+                </span>
+                <ChevronDown
+                  className={`h-3 w-3 opacity-70 transition ${menuOpen ? "rotate-180" : ""}`}
+                  strokeWidth={1.75}
+                />
+              </button>
+
+              {menuOpen && (
+                <div className="menu-panel absolute left-0 top-[calc(100%+4px)] z-[100] w-64 p-2">
+                  <label className="mb-1.5 flex flex-col gap-1 rounded-md border border-[var(--rovah-border)] bg-[var(--rovah-bg)] p-2">
+                    <span className="menu-panel-label flex items-center gap-1.5">
+                      <Camera className="h-3.5 w-3.5 text-[var(--rovah-green-dark)]" strokeWidth={1.75} />
+                      Câmera
+                    </span>
+                    <select
+                      className="info-card-field rounded-md px-2 py-1 text-xs"
+                      value={selectedCameraId}
+                      disabled={running || loading || loadingCameras || cameras.length === 0}
+                      onChange={(e) => handleCameraSelection(e.target.value)}
+                    >
+                      {cameras.length === 0 ? (
+                        <option value="">Nenhuma câmera</option>
+                      ) : (
+                        cameras.map((camera) => (
+                          <option key={camera.deviceId} value={camera.deviceId}>
+                            {camera.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+
+                  <div className="space-y-0.5">
+                    <MenuItem
+                      icon={<RefreshCw className="h-4 w-4" strokeWidth={1.75} />}
+                      label={loadingCameras ? "Listando…" : "Atualizar câmeras"}
+                      disabled={running || loading || loadingCameras}
+                      onClick={() => void loadCameras(true)}
+                    />
+                    <MenuItem
+                      icon={<Video className="h-4 w-4" strokeWidth={1.75} />}
+                      label={loading && previewOnly ? "Testando…" : "Testar câmera"}
+                      disabled={running || loading || cameras.length === 0}
+                      onClick={() => void testCamera()}
+                    />
+                    <MenuItem
+                      icon={<PlayCircle className="h-4 w-4" strokeWidth={1.75} />}
+                      label={loading ? "Iniciando…" : "Iniciar câmera"}
+                      tone="success"
+                      disabled={running || loading || cameras.length === 0}
+                      onClick={() => void startCamera()}
+                    />
+                    <MenuItem
+                      icon={<FileVideo className="h-4 w-4" strokeWidth={1.75} />}
+                      label={loading ? "Carregando…" : "Adicionar vídeo"}
+                      tone="primary"
+                      disabled={running || loading}
+                      onClick={() => fileInputRef.current?.click()}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="video/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    setMenuOpen(false);
+                    void startVideoFile(file);
+                  }
+                  e.target.value = "";
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="flex min-w-0 flex-1 flex-col items-center gap-0.5 px-1">
+            <div className="flex items-center gap-1.5">
+              <ScanEye className="h-4 w-4 shrink-0 text-[var(--rovah-green)]" strokeWidth={1.75} />
+              <span className="contador-subtitle text-[9px] font-semibold uppercase sm:text-[10px]">
                 Egg Vision AI
               </span>
-              <ScanEye className="h-4 w-4 shrink-0 text-cyan-500" strokeWidth={1.75} />
+              <ScanEye className="h-4 w-4 shrink-0 text-[var(--rovah-green)]" strokeWidth={1.75} />
             </div>
-            <h1 className="contador-title text-center text-xl font-black tracking-[0.08em] md:text-2xl">
+            <h1 className="contador-title text-center text-2xl font-extrabold md:text-3xl">
               CONTADOR DE OVOS
             </h1>
           </div>
@@ -1189,9 +1280,9 @@ export function ContagemDemoScreen() {
           <Image
             src="/logo-bica-meu-galo.png"
             alt="Bica Meu Galo"
-            width={52}
-            height={52}
-            className="shrink-0 rounded-full border border-slate-200 bg-white shadow-sm"
+            width={96}
+            height={96}
+            className="shrink-0 rounded-full border-2 border-[var(--rovah-green)] bg-white shadow-md"
             priority
           />
         </div>
@@ -1203,101 +1294,13 @@ export function ContagemDemoScreen() {
         </div>
       )}
 
-      <section className="flex shrink-0 flex-col items-center gap-1.5">
-        <div ref={menuRef} className="relative w-full max-w-lg">
-          <button
-            type="button"
-            onClick={() => setMenuOpen((open) => !open)}
-            className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
-          >
-            <Menu className="h-4 w-4 text-sky-600" strokeWidth={1.75} />
-            Menu de contagem
-            <ChevronDown
-              className={`h-3.5 w-3.5 text-slate-500 transition ${menuOpen ? "rotate-180" : ""}`}
-              strokeWidth={1.75}
-            />
-          </button>
-
-          {menuOpen && (
-            <div className="absolute left-0 right-0 z-20 mt-2 rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
-              <label className="mb-2 flex flex-col gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3">
-                <span className="flex items-center justify-center gap-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  <Camera className="h-4 w-4 text-sky-600" strokeWidth={1.75} />
-                  Selecionar câmera
-                </span>
-                <select
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-center text-sm text-slate-700 disabled:opacity-50"
-                  value={selectedCameraId}
-                  disabled={running || loading || loadingCameras || cameras.length === 0}
-                  onChange={(e) => handleCameraSelection(e.target.value)}
-                >
-                  {cameras.length === 0 ? (
-                    <option value="">Nenhuma câmera detectada</option>
-                  ) : (
-                    cameras.map((camera) => (
-                      <option key={camera.deviceId} value={camera.deviceId}>
-                        {camera.label}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-
-              <div className="space-y-1">
-                <MenuItem
-                  icon={<RefreshCw className="h-4 w-4" strokeWidth={1.75} />}
-                  label={loadingCameras ? "Listando câmeras…" : "Atualizar câmeras"}
-                  disabled={running || loading || loadingCameras}
-                  onClick={() => void loadCameras(true)}
-                />
-                <MenuItem
-                  icon={<Video className="h-4 w-4" strokeWidth={1.75} />}
-                  label={loading && previewOnly ? "Testando câmera…" : "Testar câmera"}
-                  disabled={running || loading || cameras.length === 0}
-                  onClick={() => void testCamera()}
-                />
-                <MenuItem
-                  icon={<PlayCircle className="h-4 w-4" strokeWidth={1.75} />}
-                  label={loading ? "Iniciando câmera…" : "Iniciar câmera"}
-                  tone="success"
-                  disabled={running || loading || cameras.length === 0}
-                  onClick={() => void startCamera()}
-                />
-                <MenuItem
-                  icon={<FileVideo className="h-4 w-4" strokeWidth={1.75} />}
-                  label={loading ? "Carregando vídeo…" : "Adicionar vídeo"}
-                  tone="primary"
-                  disabled={running || loading}
-                  onClick={() => fileInputRef.current?.click()}
-                />
-              </div>
-            </div>
-          )}
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="video/*"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) {
-                setMenuOpen(false);
-                void startVideoFile(file);
-              }
-              e.target.value = "";
-            }}
-          />
-        </div>
-      </section>
-
       {(cameras.length > 0 && cameras.every((camera) => camera.label.startsWith("Câmera "))) ||
       hasSelectionMismatch ||
       videoFileName ? (
-        <section className="shrink-0 rounded-md border border-slate-200 bg-white px-2 py-1 text-center text-[11px] text-slate-600 shadow-sm">
+        <section className="shrink-0 rounded-md border border-[var(--rovah-border)] bg-white px-2 py-1 text-center text-[11px] text-[var(--rovah-text-muted)] shadow-sm">
           {videoFileName && (
             <p>
-              Vídeo: <span className="font-medium text-slate-800">{videoFileName}</span>
+              Vídeo: <span className="font-semibold text-[var(--rovah-text)]">{videoFileName}</span>
             </p>
           )}
           {hasSelectionMismatch && (
@@ -1317,11 +1320,11 @@ export function ContagemDemoScreen() {
         </div>
       )}
 
-      <section className="flex min-h-0 flex-1 flex-col gap-1">
+      <section className="relative z-0 flex min-h-0 flex-1 flex-col gap-1">
         <div className="relative min-h-0 flex-1">
           <div className="grid h-full min-h-0 grid-cols-1 gap-2 md:grid-cols-2">
-            <div className="relative flex min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-              <p className="shrink-0 border-b border-slate-100 px-2 py-0.5 text-center text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className="relative flex min-h-0 flex-col overflow-hidden rounded-lg border border-[var(--rovah-border)] bg-white shadow-sm">
+              <p className="panel-heading shrink-0 px-2 py-0.5 text-center">
                 Ao vivo
               </p>
               <div className="relative min-h-0 flex-1 bg-slate-950">
@@ -1340,8 +1343,8 @@ export function ContagemDemoScreen() {
                 )}
               </div>
             </div>
-            <div className="relative flex min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-              <p className="shrink-0 border-b border-slate-100 px-2 py-0.5 text-center text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className="relative flex min-h-0 flex-col overflow-hidden rounded-lg border border-[var(--rovah-border)] bg-white shadow-sm">
+              <p className="panel-heading shrink-0 px-2 py-0.5 text-center">
                 Processador
               </p>
               <div className="relative min-h-0 flex-1 bg-slate-950">
@@ -1354,7 +1357,7 @@ export function ContagemDemoScreen() {
                     className="h-full w-full object-contain"
                   />
                 ) : (
-                  <div className="flex h-full items-center justify-center bg-slate-100 text-center text-xs text-slate-500">
+                  <div className="flex h-full items-center justify-center bg-[var(--rovah-bg)] text-center text-xs text-[var(--rovah-text-muted)]">
                     Preview do processador
                   </div>
                 )}
@@ -1439,11 +1442,11 @@ export function ContagemDemoScreen() {
               disabled={running || loading}
               onChange={(e) => handleLoteDigitsChange(e.target.value)}
               onBlur={() => persistLote(loteDigits, loteSiglas)}
-              className="info-card-field w-[3.2rem] font-mono text-xs tracking-widest"
+              className="info-card-field w-[3.2rem] text-xs tracking-widest"
               aria-label="Quatro dígitos do lote"
               placeholder="0000"
             />
-            <span className="text-sm font-bold text-slate-400">-</span>
+            <span className="text-sm font-bold text-[var(--rovah-text-muted)]">-</span>
             <input
               type="text"
               maxLength={2}
@@ -1451,7 +1454,7 @@ export function ContagemDemoScreen() {
               disabled={running || loading}
               onChange={(e) => handleLoteSiglasChange(e.target.value)}
               onBlur={() => persistLote(loteDigits, loteSiglas)}
-              className="info-card-field w-[2.2rem] font-mono text-xs uppercase tracking-widest"
+              className="info-card-field w-[2.2rem] text-xs uppercase tracking-widest"
               aria-label="Siglas do lote"
               placeholder="AA"
             />
