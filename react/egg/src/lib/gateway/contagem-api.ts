@@ -82,8 +82,7 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-export async function enviarFrame(blob: Blob): Promise<ContagemStatus> {
-  const image_b64 = await blobToBase64(blob);
+export async function enviarFrameBase64(image_b64: string): Promise<ContagemStatus> {
   const res = await gatewayFetch("contagem/screen/frame-b64", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -93,4 +92,9 @@ export async function enviarFrame(blob: Blob): Promise<ContagemStatus> {
     throw new Error(await readGatewayError(res, `Frame falhou: HTTP ${res.status}`));
   }
   return res.json();
+}
+
+export async function enviarFrame(blob: Blob): Promise<ContagemStatus> {
+  const image_b64 = await blobToBase64(blob);
+  return enviarFrameBase64(image_b64);
 }

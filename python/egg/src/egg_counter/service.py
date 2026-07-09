@@ -101,7 +101,7 @@ class EggCounterService:
         self._update_fps(started_at)
 
         debug_frame = self._draw_debug_frame(frame, result.tracked_objects, result.events)
-        self._last_annotated_frame_b64 = _encode_frame_b64(debug_frame)
+        self._last_annotated_frame_b64 = _encode_frame_b64(debug_frame, quality=62)
         return self._build_frame_result(result.events)
 
     def process_stream(self, max_frames: int | None = None, display: bool = True) -> None:

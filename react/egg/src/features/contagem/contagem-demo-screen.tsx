@@ -6,7 +6,6 @@ import {
   CalendarCheck,
   Camera,
   ChevronDown,
-  Clock,
   Egg,
   FileVideo,
   Layers,
@@ -23,7 +22,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
-  enviarFrame,
+  enviarFrameBase64,
   fetchContagemStatus,
   iniciarContagem,
   pararContagem,
@@ -72,6 +71,31 @@ function readStoredLote(): { digits: string; siglas: string } {
 
 function writeStoredLote(digits: string, siglas: string) {
   localStorage.setItem(LOTE_STORAGE_KEY, JSON.stringify({ digits, siglas }));
+}
+
+const MAX_CAPTURE_WIDTH = 848;
+const UPLOAD_JPEG_QUALITY = 0.7;
+const MIN_FRAME_INTERVAL_MS = 90;
+const VIDEO_SAMPLE_SECONDS = 0.08;
+
+function captureFrameBase64(video: HTMLVideoElement, canvas: HTMLCanvasElement): string | null {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) return null;
+
+  const scale = width > MAX_CAPTURE_WIDTH ? MAX_CAPTURE_WIDTH / width : 1;
+  const targetW = Math.max(1, Math.round(width * scale));
+  const targetH = Math.max(1, Math.round(height * scale));
+
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(video, 0, 0, targetW, targetH);
+
+  const dataUrl = canvas.toDataURL("image/jpeg", UPLOAD_JPEG_QUALITY);
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : null;
 }
 
 function getLocalDateKey(date = new Date()) {
@@ -123,17 +147,16 @@ function InfoCard({ title, value, icon, accent = "default", children }: InfoCard
         : "text-slate-800";
 
   return (
-    <article className="info-card-3d flex min-h-[168px] flex-col items-center rounded-xl px-4 py-5 text-center transition-shadow">
-      <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full border border-sky-200 bg-sky-50 text-sky-600 shadow-sm">
+    <article className="info-card-3d flex min-h-[72px] flex-col items-center justify-center rounded-lg px-2 py-1.5 text-center">
+      <div className="mb-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-sky-200 bg-sky-50 text-sky-600 [&_svg]:h-3.5 [&_svg]:w-3.5">
         {icon}
       </div>
-      <div className="text-sm font-semibold tracking-wide text-slate-600">{title}</div>
-      {children ?? (
-        <div className={`mt-3 text-3xl font-bold md:text-4xl ${valueColor}`}>{value}</div>
-      )}
-      <div className="mt-4 h-1.5 w-full max-w-[220px] overflow-hidden rounded-full border border-slate-300 bg-slate-200 shadow-inner">
-        <div className="h-full w-[78%] rounded-full bg-gradient-to-r from-sky-500 to-cyan-400 shadow-sm" />
+      <div className="text-[9px] font-semibold uppercase leading-tight tracking-wide text-slate-500">
+        {title}
       </div>
+      {children ?? (
+        <div className={`mt-0.5 text-lg font-bold leading-none md:text-xl ${valueColor}`}>{value}</div>
+      )}
     </article>
   );
 }
@@ -148,14 +171,14 @@ function VideoDurationOverlay({
   const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
 
   return (
-    <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-lg border border-white/20 bg-slate-950/85 px-3 py-2 shadow-lg backdrop-blur-sm">
-      <div className="mb-1.5 flex items-center justify-between gap-3 font-mono text-xs text-slate-200 sm:text-sm">
-        <span>Duração do vídeo</span>
+    <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded-md border border-white/20 bg-slate-950/85 px-2 py-1 shadow-lg backdrop-blur-sm">
+      <div className="flex items-center justify-between gap-2 font-mono text-[10px] text-slate-200">
+        <span>Vídeo</span>
         <span className="font-semibold text-white">
           {formatVideoTime(currentTime)} / {formatVideoTime(duration)}
         </span>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-slate-700">
+      <div className="mt-1 h-1 overflow-hidden rounded-full bg-slate-700">
         <div
           className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-500 transition-[width] duration-300"
           style={{ width: `${progress}%` }}
@@ -167,7 +190,6 @@ function VideoDurationOverlay({
 
 function DateTimeCard({ dateTime }: { dateTime: Date }) {
   const date = dateTime.toLocaleDateString("pt-BR", {
-    weekday: "long",
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -179,13 +201,10 @@ function DateTimeCard({ dateTime }: { dateTime: Date }) {
   });
 
   return (
-    <article className="inline-flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm">
-      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-sky-50 text-sky-600">
-        <Clock className="h-4 w-4" strokeWidth={1.75} />
-      </span>
-      <span className="font-medium capitalize">{date}</span>
-      <span className="font-mono text-base font-semibold text-slate-900">{time}</span>
-    </article>
+    <div className="hidden min-w-[108px] flex-col items-start leading-tight sm:flex">
+      <span className="font-mono text-[10px] font-semibold text-slate-700">{date}</span>
+      <span className="font-mono text-xs font-bold text-slate-900">{time}</span>
+    </div>
   );
 }
 
@@ -226,7 +245,7 @@ function ControlButton({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className={`flex h-14 w-14 items-center justify-center rounded-full border-2 shadow-lg backdrop-blur-md transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 sm:h-16 sm:w-16 ${toneClass}`}
+      className={`flex h-11 w-11 items-center justify-center rounded-full border-2 shadow-lg backdrop-blur-md transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 sm:h-12 sm:w-12 ${toneClass}`}
     >
       {icon}
     </button>
@@ -315,6 +334,12 @@ export function ContagemDemoScreen() {
   const fileUrlRef = useRef<string | null>(null);
   const loopRef = useRef<number | null>(null);
   const previewLoopRef = useRef<number | null>(null);
+  const countingLoopActiveRef = useRef(false);
+  const frameProcessingRef = useRef(false);
+  const lastFrameSentAtRef = useRef(0);
+  const lastProcessedVideoTimeRef = useRef(0);
+  const videoFileNameRef = useRef<string | null>(null);
+  const previewImgRef = useRef<HTMLImageElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeDeviceIdRef = useRef<string | null>(null);
 
@@ -342,6 +367,20 @@ export function ContagemDemoScreen() {
   const [loteDigits, setLoteDigits] = useState("0000");
   const [loteSiglas, setLoteSiglas] = useState("AA");
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    videoFileNameRef.current = videoFileName;
+  }, [videoFileName]);
+
+  const updateProcessorPreview = useCallback((annotatedB64: string) => {
+    const src = `data:image/jpeg;base64,${annotatedB64}`;
+    const img = previewImgRef.current;
+    if (img) {
+      img.src = src;
+      return;
+    }
+    setPreview(src);
+  }, []);
 
   const assertCameraSupported = useCallback(() => {
     if (!window.isSecureContext) {
@@ -583,9 +622,14 @@ export function ContagemDemoScreen() {
   }, []);
 
   const stopCountingLoop = useCallback(() => {
-    if (loopRef.current) {
-      window.clearInterval(loopRef.current);
+    countingLoopActiveRef.current = false;
+    frameProcessingRef.current = false;
+    if (loopRef.current !== null) {
+      cancelAnimationFrame(loopRef.current);
       loopRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.playbackRate = 1;
     }
   }, []);
 
@@ -611,6 +655,7 @@ export function ContagemDemoScreen() {
     if (video) {
       video.onended = null;
       video.pause();
+      video.playbackRate = 1;
       video.removeAttribute("src");
       video.srcObject = null;
       video.load();
@@ -675,42 +720,78 @@ export function ContagemDemoScreen() {
   }, [drawLocalPreview]);
 
   const startFrameLoop = useCallback(() => {
-    loopRef.current = window.setInterval(async () => {
+    const runCountingLoop = async () => {
+      if (!countingLoopActiveRef.current) return;
+
       const video = videoRef.current;
       const canvas = captureCanvasRef.current;
-      if (!video || !canvas || video.readyState < 2 || video.ended) {
-        if (video?.ended) {
-          void handleVideoEnded();
-        }
+      if (!video || !canvas || video.readyState < 2) {
+        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
         return;
       }
 
-      const width = video.videoWidth;
-      const height = video.videoHeight;
-      if (!width || !height) return;
+      if (video.ended) {
+        void handleVideoEnded();
+        return;
+      }
 
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.drawImage(video, 0, 0, width, height);
+      if (frameProcessingRef.current) {
+        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+        return;
+      }
 
-      const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob((b) => resolve(b), "image/jpeg", 0.75)
-      );
-      if (!blob) return;
+      const now = performance.now();
+      const isUploadedVideo = Boolean(videoFileNameRef.current);
 
+      if (isUploadedVideo) {
+        const videoDelta = video.currentTime - lastProcessedVideoTimeRef.current;
+        if (videoDelta < VIDEO_SAMPLE_SECONDS && lastProcessedVideoTimeRef.current > 0) {
+          loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+          return;
+        }
+      } else if (now - lastFrameSentAtRef.current < MIN_FRAME_INTERVAL_MS) {
+        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+        return;
+      }
+
+      const capturedVideoTime = video.currentTime;
+      const imageB64 = captureFrameBase64(video, canvas);
+      if (!imageB64) {
+        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+        return;
+      }
+
+      frameProcessingRef.current = true;
       try {
-        const data = await enviarFrame(blob);
+        const data = await enviarFrameBase64(imageB64);
+        lastFrameSentAtRef.current = performance.now();
+        lastProcessedVideoTimeRef.current = capturedVideoTime;
         setStatus(data);
+
         if (data.annotated_frame_b64) {
-          setPreview(`data:image/jpeg;base64,${data.annotated_frame_b64}`);
+          updateProcessorPreview(data.annotated_frame_b64);
+        }
+
+        if (isUploadedVideo) {
+          const lag = video.currentTime - lastProcessedVideoTimeRef.current;
+          video.playbackRate = lag > 0.2 ? Math.max(0.45, 1 - lag) : 1;
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Falha ao enviar frame");
+      } finally {
+        frameProcessingRef.current = false;
+        if (countingLoopActiveRef.current) {
+          loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+        }
       }
-    }, 200);
-  }, [handleVideoEnded]);
+    };
+
+    countingLoopActiveRef.current = true;
+    frameProcessingRef.current = false;
+    lastFrameSentAtRef.current = 0;
+    lastProcessedVideoTimeRef.current = 0;
+    loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+  }, [handleVideoEnded, updateProcessorPreview]);
 
   const connectCamera = useCallback(
     async (deviceId: string, cameraLabel: string) => {
@@ -1078,66 +1159,61 @@ export function ContagemDemoScreen() {
   }, []);
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-4 py-6 md:px-8">
-      <header className="relative overflow-hidden border-b border-slate-200/80 pb-6 pt-4">
+    <div className="mx-auto flex h-dvh max-h-dvh w-full max-w-7xl flex-col gap-1.5 overflow-hidden px-3 py-2 md:px-4">
+      <header className="relative shrink-0 overflow-hidden border-b border-slate-200/80 pb-2 pt-1">
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.12),transparent_55%)]"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.1),transparent_60%)]"
         />
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/70 to-transparent contador-title-glow"
+          className="contador-title-glow pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/70 to-transparent"
         />
 
-        <div className="relative flex flex-col items-center gap-3 px-20">
-          <div className="flex items-center gap-3">
-            <span className="h-px w-10 bg-gradient-to-r from-transparent to-cyan-500/80" />
-            <ScanEye className="h-6 w-6 text-cyan-500" strokeWidth={1.75} />
-            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.42em] text-cyan-600/90 sm:text-xs">
-              Egg Vision AI
-            </span>
-            <ScanEye className="h-6 w-6 text-cyan-500" strokeWidth={1.75} />
-            <span className="h-px w-10 bg-gradient-to-l from-transparent to-cyan-500/80" />
+        <div className="relative flex items-center justify-between gap-2 px-1">
+          <DateTimeCard dateTime={now} />
+
+          <div className="flex min-w-0 flex-1 flex-col items-center gap-0.5 px-2">
+            <div className="flex items-center gap-2">
+              <ScanEye className="h-4 w-4 shrink-0 text-cyan-500" strokeWidth={1.75} />
+              <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.32em] text-cyan-600/90">
+                Egg Vision AI
+              </span>
+              <ScanEye className="h-4 w-4 shrink-0 text-cyan-500" strokeWidth={1.75} />
+            </div>
+            <h1 className="contador-title text-center text-xl font-black tracking-[0.08em] md:text-2xl">
+              CONTADOR DE OVOS
+            </h1>
           </div>
 
-          <h1 className="contador-title text-center text-3xl font-black tracking-[0.1em] md:text-4xl lg:text-5xl">
-            CONTADOR DE OVOS
-          </h1>
-
-          <p className="max-w-md text-center font-mono text-[11px] uppercase tracking-[0.28em] text-slate-500 sm:text-xs">
-            Visão computacional · contagem em tempo real
-          </p>
-        </div>
-
-        <div className="absolute right-0 top-1/2 -translate-y-1/2">
           <Image
             src="/logo-bica-meu-galo.png"
             alt="Bica Meu Galo"
-            width={96}
-            height={96}
-            className="rounded-full border border-slate-200 bg-white shadow-sm"
+            width={52}
+            height={52}
+            className="shrink-0 rounded-full border border-slate-200 bg-white shadow-sm"
             priority
           />
         </div>
       </header>
 
       {error && (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-center text-sm text-rose-700">
+        <div className="shrink-0 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-center text-xs text-rose-700">
           {error}
         </div>
       )}
 
-      <section className="flex flex-col items-center gap-4">
-        <div ref={menuRef} className="relative w-full max-w-xl">
+      <section className="flex shrink-0 flex-col items-center gap-1.5">
+        <div ref={menuRef} className="relative w-full max-w-lg">
           <button
             type="button"
             onClick={() => setMenuOpen((open) => !open)}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
           >
-            <Menu className="h-5 w-5 text-sky-600" strokeWidth={1.75} />
+            <Menu className="h-4 w-4 text-sky-600" strokeWidth={1.75} />
             Menu de contagem
             <ChevronDown
-              className={`h-4 w-4 text-slate-500 transition ${menuOpen ? "rotate-180" : ""}`}
+              className={`h-3.5 w-3.5 text-slate-500 transition ${menuOpen ? "rotate-180" : ""}`}
               strokeWidth={1.75}
             />
           </button>
@@ -1216,97 +1292,97 @@ export function ContagemDemoScreen() {
       </section>
 
       {(cameras.length > 0 && cameras.every((camera) => camera.label.startsWith("Câmera "))) ||
-      streamInfo ||
       hasSelectionMismatch ||
       videoFileName ? (
-        <section className="rounded-xl border border-slate-200 bg-white p-4 text-center text-sm text-slate-600 shadow-sm">
-          {cameras.length > 0 && cameras.every((camera) => camera.label.startsWith("Câmera ")) && (
-            <p>
-              Os nomes podem aparecer genéricos até você clicar em &quot;Atualizar câmeras&quot; e
-              permitir o acesso.
-            </p>
-          )}
-          {streamInfo && <p>Fonte ativa: {streamInfo}</p>}
-          {hasSelectionMismatch && (
-            <p className="text-amber-700">
-              Selecionada: {selectedCameraLabel}. Clique em &quot;Testar câmera&quot; para trocar a
-              fonte ativa.
-            </p>
-          )}
+        <section className="shrink-0 rounded-md border border-slate-200 bg-white px-2 py-1 text-center text-[11px] text-slate-600 shadow-sm">
           {videoFileName && (
             <p>
-              Vídeo em uso: <span className="font-medium text-slate-800">{videoFileName}</span>
+              Vídeo: <span className="font-medium text-slate-800">{videoFileName}</span>
             </p>
+          )}
+          {hasSelectionMismatch && (
+            <p className="text-amber-700">
+              Selecionada: {selectedCameraLabel}. Clique em &quot;Testar câmera&quot; para trocar.
+            </p>
+          )}
+          {cameras.length > 0 && cameras.every((camera) => camera.label.startsWith("Câmera ")) && (
+            <p>Atualize as câmeras para ver os nomes corretos.</p>
           )}
         </section>
       ) : null}
 
       {sourceWarning && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-center text-sm text-amber-800">
+        <div className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-center text-[11px] text-amber-800">
           {sourceWarning}
         </div>
       )}
 
-      <section className="flex flex-col gap-3">
-        <div className="relative">
-          <div className="grid flex-1 gap-4 md:grid-cols-2">
-            <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-              <p className="border-b border-slate-100 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+      <section className="flex min-h-0 flex-1 flex-col gap-1">
+        <div className="relative min-h-0 flex-1">
+          <div className="grid h-full min-h-0 grid-cols-1 gap-2 md:grid-cols-2">
+            <div className="relative flex min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+              <p className="shrink-0 border-b border-slate-100 px-2 py-0.5 text-center text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                 Ao vivo
               </p>
-              <video ref={videoRef} className="hidden" autoPlay muted playsInline />
-              <canvas
-                ref={previewCanvasRef}
-                className="aspect-video w-full bg-slate-950 object-contain"
-              />
-              <canvas ref={captureCanvasRef} className="hidden" />
-              {!cameraReady && !running && !previewOnly && (
-                <div className="pointer-events-none absolute inset-0 top-9 flex items-center justify-center bg-slate-900/75 p-4 text-center text-sm text-slate-200">
-                  {loading ? "Carregando…" : "Abra o menu e selecione a câmera ou adicione um vídeo"}
-                </div>
-              )}
-              {awaitingVideoStart && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-slate-900/80 px-4 py-2 text-center text-sm text-slate-100">
-                  Vídeo carregado. Use o botão play para iniciar.
-                </div>
-              )}
+              <div className="relative min-h-0 flex-1 bg-slate-950">
+                <video ref={videoRef} className="hidden" autoPlay muted playsInline />
+                <canvas ref={previewCanvasRef} className="h-full w-full object-contain" />
+                <canvas ref={captureCanvasRef} className="hidden" />
+                {!cameraReady && !running && !previewOnly && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-slate-900/75 p-3 text-center text-xs text-slate-200">
+                    {loading ? "Carregando…" : "Abra o menu e selecione a câmera ou adicione um vídeo"}
+                  </div>
+                )}
+                {awaitingVideoStart && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-slate-900/80 px-2 py-1 text-center text-[11px] text-slate-100">
+                    Vídeo carregado. Use o botão play para iniciar.
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-              <p className="border-b border-slate-100 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <div className="relative flex min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+              <p className="shrink-0 border-b border-slate-100 px-2 py-0.5 text-center text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                 Processador
               </p>
-              {preview ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={preview} alt="Frame processado" className="aspect-video w-full bg-slate-950 object-contain" />
-              ) : (
-                <div className="flex aspect-video items-center justify-center bg-slate-100 text-center text-sm text-slate-500">
-                  Preview do processador
-                </div>
-              )}
-              {videoFileName && videoDuration > 0 && (
-                <VideoDurationOverlay currentTime={videoCurrentTime} duration={videoDuration} />
-              )}
+              <div className="relative min-h-0 flex-1 bg-slate-950">
+                {preview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    ref={previewImgRef}
+                    src={preview}
+                    alt="Frame processado"
+                    className="h-full w-full object-contain"
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center bg-slate-100 text-center text-xs text-slate-500">
+                    Preview do processador
+                  </div>
+                )}
+                {videoFileName && videoDuration > 0 && (
+                  <VideoDurationOverlay currentTime={videoCurrentTime} duration={videoDuration} />
+                )}
+              </div>
             </div>
           </div>
 
-          <div className="pointer-events-none absolute inset-0 top-9 flex items-center justify-center">
-            <div className="pointer-events-auto flex flex-col items-center gap-3 rounded-3xl border border-white/15 bg-slate-950/75 px-4 py-4 shadow-2xl shadow-slate-950/40 backdrop-blur-md sm:gap-4 sm:px-5 sm:py-5">
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="pointer-events-auto flex flex-col items-center gap-2 rounded-2xl border border-white/15 bg-slate-950/75 px-3 py-3 shadow-2xl shadow-slate-950/40 backdrop-blur-md">
               <ControlButton
-                icon={<Pause className="h-6 w-6 sm:h-7 sm:w-7" strokeWidth={1.75} />}
+                icon={<Pause className="h-5 w-5" strokeWidth={1.75} />}
                 label="Pausar contagem"
                 tone="warning"
                 disabled={!running || paused || previewOnly || loading}
                 onClick={handlePause}
               />
               <ControlButton
-                icon={<Play className="h-6 w-6 sm:h-7 sm:w-7" strokeWidth={1.75} />}
+                icon={<Play className="h-5 w-5" strokeWidth={1.75} />}
                 label={awaitingVideoStart ? "Iniciar contagem" : "Retomar contagem"}
                 tone="success"
                 disabled={!canResumeCounting || loading}
                 onClick={() => void handleResume()}
               />
               <ControlButton
-                icon={<Square className="h-6 w-6 sm:h-7 sm:w-7" strokeWidth={1.75} />}
+                icon={<Square className="h-5 w-5" strokeWidth={1.75} />}
                 label="Parar contagem"
                 tone="danger"
                 disabled={(!running && !previewOnly && !cameraReady) || loading}
@@ -1315,37 +1391,33 @@ export function ContagemDemoScreen() {
             </div>
           </div>
         </div>
-
-        <div className="flex justify-center">
-          <DateTimeCard dateTime={now} />
-        </div>
       </section>
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid shrink-0 grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-5">
         <InfoCard
-          title="TOTAL DE OVOS"
+          title="Total de ovos"
           value={String(totalOvos)}
           accent="danger"
           icon={<Egg className="h-5 w-5" strokeWidth={1.75} />}
         />
         <InfoCard
-          title="CONTAGEM ACUMULADA DO DIA"
+          title="Acumulado do dia"
           value={String(dailyTotal)}
           accent="success"
           icon={<CalendarCheck className="h-5 w-5" strokeWidth={1.75} />}
         />
         <InfoCard
-          title="STATUS"
+          title="Status"
           value={isOn ? "LIGADO" : "DESLIGADO"}
           accent={isOn ? "success" : "default"}
           icon={<Power className="h-5 w-5" strokeWidth={1.75} />}
         />
         <InfoCard
-          title="NOME DA GRANJA"
+          title="Granja"
           icon={<Building2 className="h-5 w-5" strokeWidth={1.75} />}
         >
           <select
-            className="info-card-field mt-3 text-xs sm:text-sm"
+            className="info-card-field mt-1 w-full text-[10px]"
             value={selectedGranja}
             disabled={running || loading}
             onChange={(e) => handleGranjaChange(e.target.value)}
@@ -1357,42 +1429,34 @@ export function ContagemDemoScreen() {
             ))}
           </select>
         </InfoCard>
-      </section>
-
-      <section className="flex justify-center">
-        <div className="w-full max-w-sm">
-          <InfoCard title="LOTE" icon={<Layers className="h-5 w-5" strokeWidth={1.75} />}>
-            <div className="mt-3 flex w-full max-w-[220px] items-center justify-center gap-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={4}
-                value={loteDigits}
-                disabled={running || loading}
-                onChange={(e) => handleLoteDigitsChange(e.target.value)}
-                onBlur={() => persistLote(loteDigits, loteSiglas)}
-                className="info-card-field w-[5.5rem] font-mono text-lg tracking-widest"
-                aria-label="Quatro dígitos do lote"
-                placeholder="0000"
-              />
-              <span className="text-xl font-bold text-slate-400">-</span>
-              <input
-                type="text"
-                maxLength={2}
-                value={loteSiglas}
-                disabled={running || loading}
-                onChange={(e) => handleLoteSiglasChange(e.target.value)}
-                onBlur={() => persistLote(loteDigits, loteSiglas)}
-                className="info-card-field w-[3.5rem] font-mono text-lg uppercase tracking-widest"
-                aria-label="Siglas do lote"
-                placeholder="AA"
-              />
-            </div>
-            <p className="mt-2 font-mono text-xs font-semibold text-slate-500">
-              {loteDigits.padStart(4, "0")}-{loteSiglas.padEnd(2, "A").slice(0, 2).toUpperCase()}
-            </p>
-          </InfoCard>
-        </div>
+        <InfoCard title="Lote" icon={<Layers className="h-5 w-5" strokeWidth={1.75} />}>
+          <div className="mt-1 flex w-full items-center justify-center gap-1">
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={4}
+              value={loteDigits}
+              disabled={running || loading}
+              onChange={(e) => handleLoteDigitsChange(e.target.value)}
+              onBlur={() => persistLote(loteDigits, loteSiglas)}
+              className="info-card-field w-[3.2rem] font-mono text-xs tracking-widest"
+              aria-label="Quatro dígitos do lote"
+              placeholder="0000"
+            />
+            <span className="text-sm font-bold text-slate-400">-</span>
+            <input
+              type="text"
+              maxLength={2}
+              value={loteSiglas}
+              disabled={running || loading}
+              onChange={(e) => handleLoteSiglasChange(e.target.value)}
+              onBlur={() => persistLote(loteDigits, loteSiglas)}
+              className="info-card-field w-[2.2rem] font-mono text-xs uppercase tracking-widest"
+              aria-label="Siglas do lote"
+              placeholder="AA"
+            />
+          </div>
+        </InfoCard>
       </section>
     </div>
   );
