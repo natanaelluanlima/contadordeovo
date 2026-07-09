@@ -33,6 +33,22 @@ Documentação detalhada de cada um:
 
 ## Subir tudo
 
+### Atalho rapido (Windows)
+
+1. **Duplo clique** em [`iniciar-contador.bat`](iniciar-contador.bat) na raiz do projeto, ou use o atalho **Contador de Ovos** na area de trabalho.
+2. O script sobe os 4 servicos em segundo plano (processador, BFF, gateway e site) e abre o navegador em http://localhost:8009/contagem. Os logs ficam na pasta [`logs`](logs).
+3. Para encerrar, use [`parar-contador.bat`](parar-contador.bat) ou o atalho **Parar Contador de Ovos**.
+
+Via PowerShell:
+
+```powershell
+.\scripts\iniciar-contador.ps1          # sobe tudo
+.\scripts\iniciar-contador.ps1 -AbrirNavegador
+.\scripts\parar-contador.ps1            # para tudo
+```
+
+### Manual (um terminal por servico)
+
 Abra um terminal para cada serviço, nesta ordem:
 
 ```powershell

@@ -39,6 +39,7 @@ videos/
 .vscode/
 .DS_Store
 *.log
+logs/
 
 # Análise temporária
 python/egg/config/analysis-*

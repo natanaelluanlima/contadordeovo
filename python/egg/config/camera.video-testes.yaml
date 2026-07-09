@@ -8,17 +8,17 @@ crop_roi: true
 
 # Recorte da esteira (ignora piso cinza a esquerda)
 roi:
-  x: 200
-  y: 16
-  width: 620
-  height: 446
+  x: 95
+  y: 6
+  width: 743
+  height: 468
 
 # Linha horizontal de contagem no centro da esteira
 line:
-  x1: 210
-  y1: 239
-  x2: 820
-  y2: 239
+  x1: 105
+  y1: 240
+  x2: 828
+  y2: 240
   direction: bottom_to_top
 
 # Faixa central da esteira (furos/emenda geram falso positivo)
