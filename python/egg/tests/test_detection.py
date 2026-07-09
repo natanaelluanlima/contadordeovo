@@ -36,6 +36,44 @@ def test_rejects_ring_like_artifact() -> None:
     assert not backend._is_filled_egg_blob(frame, (72, 80, 128, 120), 12.0)
 
 
+def test_rejects_hollow_belt_hole() -> None:
+    backend = _backend()
+    frame = np.full((200, 200, 3), 235, dtype=np.uint8)
+    cv2.circle(frame, (100, 100), 14, (70, 70, 70), -1)
+
+    assert backend._is_hollow_belt_hole(frame, (82, 82, 118, 118), 12.0)
+
+
+def test_rejects_dark_void_hole_in_filled_blob_check() -> None:
+    backend = _backend()
+    frame = np.full((200, 200, 3), 235, dtype=np.uint8)
+    cv2.circle(frame, (100, 100), 14, (70, 70, 70), -1)
+
+    assert not backend._is_filled_egg_blob(frame, (82, 82, 118, 118), 12.0)
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parents[3] / "videos" / "VIDEO PARA TESTES.mp4").exists(),
+    reason="Video de testes ausente",
+)
+def test_empty_belt_frames_have_no_detections() -> None:
+    backend = ClassicBackend(
+        RuntimeConfig(
+            backend="classic",
+            reference_image="config/reference-video-testes.jpg",
+            diff_threshold=55,
+        )
+    )
+    video = Path(__file__).resolve().parents[3] / "videos" / "VIDEO PARA TESTES.mp4"
+    cap = cv2.VideoCapture(str(video))
+    for frame_index in (288, 465, 509):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = cap.read()
+        assert ok
+        assert backend.detect(frame) == []
+    cap.release()
+
+
 @pytest.mark.skipif(
     not Path("config/reference-video-padrao.jpg").exists(),
     reason="Imagem de referencia do video padrao ausente",

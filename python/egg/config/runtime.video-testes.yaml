@@ -7,7 +7,7 @@ target_label: egg
 reference_image: config/reference-video-testes.jpg
 diff_threshold: 55
 match_distance: 100.0
-max_missing: 18
+max_missing: 22
 normalize: false
 api_host: 0.0.0.0
 api_port: 9002

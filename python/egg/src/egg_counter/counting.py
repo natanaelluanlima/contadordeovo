@@ -15,11 +15,12 @@ class LineCounter:
         for tracked in tracked_objects:
             if tracked.track_id in self.counted_track_ids:
                 continue
-            if tracked.previous_center is None:
+            previous_center = self._effective_previous_center(tracked)
+            if previous_center is None:
                 continue
-            if not self._crossed_line(tracked.previous_center, tracked.center):
+            if not self._crossed_line(previous_center, tracked.center):
                 continue
-            if not self._matches_direction(tracked.previous_center, tracked.center):
+            if not self._matches_direction(previous_center, tracked.center):
                 continue
 
             self.total_count += 1
@@ -32,6 +33,30 @@ class LineCounter:
                 )
             )
         return events
+
+    def _effective_previous_center(
+        self,
+        tracked: TrackedDetection,
+    ) -> tuple[int, int] | None:
+        if tracked.previous_center is not None:
+            return tracked.previous_center
+
+        tolerance = 35
+        line_y = (self.line.y1 + self.line.y2) // 2
+        center_x, center_y = tracked.center
+        if abs(center_y - line_y) > tolerance:
+            return None
+
+        direction = self.line.direction
+        if direction == "bottom_to_top" and center_y <= line_y:
+            return (center_x, center_y + tolerance + 12)
+        if direction == "top_to_bottom" and center_y >= line_y:
+            return (center_x, center_y - tolerance - 12)
+        if direction == "left_to_right" and center_x <= (self.line.x1 + self.line.x2) // 2:
+            return (center_x - tolerance - 12, center_y)
+        if direction == "right_to_left" and center_x >= (self.line.x1 + self.line.x2) // 2:
+            return (center_x + tolerance + 12, center_y)
+        return None
 
     def _crossed_line(
         self,

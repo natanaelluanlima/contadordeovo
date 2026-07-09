@@ -61,3 +61,13 @@ def test_counts_each_track_once() -> None:
 
     assert counter.total_count == 1
     assert events == []
+
+
+def test_counts_late_first_detection_near_line() -> None:
+    line = LineConfig(x1=0, y1=270, x2=960, y2=270, direction="bottom_to_top")
+    counter = LineCounter(line)
+
+    events = counter.update([_tracked(1, (90, 235, 130, 275), None)])
+
+    assert counter.total_count == 1
+    assert len(events) == 1

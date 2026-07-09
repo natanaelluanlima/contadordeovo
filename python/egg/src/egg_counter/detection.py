@@ -206,6 +206,8 @@ class ClassicBackend(InferenceBackend):
             x, y, box_width, box_height = cv2.boundingRect(contour)
             if box_width < 40 or box_height < 28:
                 continue
+            if box_width > width * 0.45 or box_height > height * 0.55:
+                continue
             if x < 3 or x + box_width > width - 3:
                 continue
 
@@ -407,9 +409,11 @@ class ClassicBackend(InferenceBackend):
         bbox: tuple[int, int, int, int],
         hole_radius: float,
     ) -> bool:
+        if self._is_hollow_belt_hole(frame, bbox, hole_radius):
+            return False
         if self._is_on_irregular_belt(frame, bbox, hole_radius):
             return False
-        if self._passes_low_contrast_egg_shape(frame, bbox):
+        if self._passes_low_contrast_egg_shape(frame, bbox, hole_radius):
             return True
         return self._is_filled_egg_blob(frame, bbox, hole_radius)
 
@@ -417,12 +421,17 @@ class ClassicBackend(InferenceBackend):
         self,
         frame: np.ndarray,
         bbox: tuple[int, int, int, int],
+        hole_radius: float,
     ) -> bool:
         x1, y1, x2, y2 = bbox
         roi_gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
         hsv = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
         height, width = roi_gray.shape
         if height < 12 or width < 12:
+            return False
+
+        min_egg_dim = max(42.0, hole_radius * 3.0)
+        if min(height, width) < min_egg_dim:
             return False
 
         sat_mean = float(hsv[:, :, 1].mean())
@@ -436,6 +445,61 @@ class ClassicBackend(InferenceBackend):
             return False
 
         return float(roi_gray.std()) < 28.0
+
+    def _is_hollow_belt_hole(
+        self,
+        frame: np.ndarray,
+        bbox: tuple[int, int, int, int],
+        hole_radius: float,
+    ) -> bool:
+        x1, y1, x2, y2 = bbox
+        roi_gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        height, width = roi_gray.shape
+        if height < 12 or width < 12:
+            return False
+
+        margin_y = max(2, height // 5)
+        margin_x = max(2, width // 5)
+        center_gray = roi_gray[margin_y:-margin_y, margin_x:-margin_x]
+        border_mask = np.ones(roi_gray.shape, dtype=np.uint8)
+        border_mask[margin_y:-margin_y, margin_x:-margin_x] = 0
+        border_gray = roi_gray[border_mask == 1]
+        if center_gray.size == 0 or border_gray.size == 0:
+            return False
+
+        center_mean = float(center_gray.mean())
+        border_mean = float(border_gray.mean())
+        if center_mean < border_mean - 35.0:
+            return True
+
+        max_hole_dim = max(40.0, hole_radius * 3.4)
+        if min(height, width) > max_hole_dim:
+            return False
+
+        roi_std = float(roi_gray.std())
+        if roi_std < 52.0:
+            return False
+
+        _, dark_mask = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        dark_ratio = float((dark_mask > 0).mean())
+        if dark_ratio < 0.12:
+            return False
+
+        contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return False
+
+        largest = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest)
+        if area < 0.12 * height * width:
+            return False
+
+        perimeter = cv2.arcLength(largest, True)
+        if perimeter <= 0:
+            return False
+
+        circularity = 4.0 * np.pi * area / (perimeter * perimeter)
+        return circularity >= 0.45
 
     def _is_on_irregular_belt(
         self,
@@ -549,11 +613,15 @@ class ClassicBackend(InferenceBackend):
         saturation_mean = float(center_sat.mean())
         hue_mean = float(center_hue.mean())
 
-        if center_std > 38.0:
+        if center_mean < border_mean - 35.0:
             return False
 
         is_white_egg = saturation_mean < 80 and center_mean > 125
         is_brown_egg = 5 <= hue_mean <= 35 and saturation_mean > 22 and 75 < center_mean < 205
+        max_center_std = 42.0 if is_brown_egg else 38.0
+        if center_std > max_center_std:
+            return False
+
         if not (is_white_egg or is_brown_egg):
             return False
 
@@ -567,7 +635,8 @@ class ClassicBackend(InferenceBackend):
             return False
 
         min_dim = min(height, width)
-        if min_dim < int(hole_radius * 1.5):
+        min_egg_dim = max(int(hole_radius * 2.8), 40)
+        if min_dim < min_egg_dim:
             return False
 
         return True
