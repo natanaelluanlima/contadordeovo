@@ -7,3 +7,63 @@ body {
   color: #1e293b;
   font-family: system-ui, sans-serif;
 }
+
+.contador-title {
+  background: linear-gradient(120deg, #0284c7 0%, #4f46e5 42%, #0f172a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 22px rgba(14, 165, 233, 0.28));
+}
+
+.contador-title-glow {
+  animation: contador-glow 3.5s ease-in-out infinite;
+}
+
+.info-card-3d {
+  border: 2px solid #94a3b8;
+  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 3px 0 #64748b,
+    0 8px 16px rgba(15, 23, 42, 0.18);
+}
+
+.info-card-3d:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 3px 0 #475569,
+    0 10px 20px rgba(15, 23, 42, 0.22);
+}
+
+.info-card-field {
+  width: 100%;
+  max-width: 220px;
+  border-radius: 0.5rem;
+  border: 2px solid #cbd5e1;
+  background: #fff;
+  padding: 0.45rem 0.65rem;
+  text-align: center;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #1e293b;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.info-card-field:focus {
+  outline: none;
+  border-color: #0ea5e9;
+  box-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.08),
+    0 0 0 2px rgba(14, 165, 233, 0.25);
+}
+
+@keyframes contador-glow {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}

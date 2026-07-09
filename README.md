@@ -45,7 +45,27 @@ Via PowerShell:
 .\scripts\iniciar-contador.ps1          # sobe tudo
 .\scripts\iniciar-contador.ps1 -AbrirNavegador
 .\scripts\parar-contador.ps1            # para tudo
+.\scripts\atualizar-contador.ps1        # busca atualizacoes do GitHub
 ```
+
+### Atualizar quando outro colaborador der push
+
+O Git nao atualiza sozinho. Use o script de atualizacao:
+
+1. **Manual:** duplo clique em [`atualizar-contador.bat`](atualizar-contador.bat) ou rode `.\scripts\atualizar-contador.ps1`
+2. **Automatico (a cada 10 min):** rode uma vez como administrador:
+
+```powershell
+.\scripts\atualizar-contador.ps1 -Agendar
+```
+
+Para remover o agendamento:
+
+```powershell
+.\scripts\atualizar-contador.ps1 -RemoverAgendamento
+```
+
+O script usa `git pull --ff-only` (so avanca se nao houver conflito) e ignora o pull se voce tiver alteracoes locais sem commit. Logs em [`logs/atualizar.log`](logs/atualizar.log).
 
 ### Manual (um terminal por servico)
 

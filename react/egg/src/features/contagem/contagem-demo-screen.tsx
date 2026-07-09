@@ -16,6 +16,7 @@ import {
   PlayCircle,
   Power,
   RefreshCw,
+  ScanEye,
   Square,
   Video,
 } from "lucide-react";
@@ -30,6 +31,48 @@ import {
 } from "@/lib/gateway/contagem-api";
 
 const DAILY_STORAGE_KEY = "contador-ovos-daily-total";
+const GRANJA_STORAGE_KEY = "contador-ovos-granja";
+const LOTE_STORAGE_KEY = "contador-ovos-lote";
+
+const GRANJA_OPTIONS = [
+  "VANDERLEI ODY - VO",
+  "VANDERLEI ODY - VV",
+  "VANDERLEI ODY - VL",
+  "MARCOS ODY - MO",
+  "LAUREDIR BRUSTOLIN - LL",
+] as const;
+
+function formatVideoTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "00:00";
+  const total = Math.floor(seconds);
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function readStoredGranja(): string {
+  if (typeof window === "undefined") return GRANJA_OPTIONS[0];
+  return localStorage.getItem(GRANJA_STORAGE_KEY) ?? GRANJA_OPTIONS[0];
+}
+
+function readStoredLote(): { digits: string; siglas: string } {
+  if (typeof window === "undefined") return { digits: "0000", siglas: "AA" };
+  try {
+    const raw = localStorage.getItem(LOTE_STORAGE_KEY);
+    if (!raw) return { digits: "0000", siglas: "AA" };
+    const parsed = JSON.parse(raw) as { digits?: string; siglas?: string };
+    return {
+      digits: (parsed.digits ?? "0000").replace(/\D/g, "").slice(0, 4).padStart(4, "0"),
+      siglas: (parsed.siglas ?? "AA").replace(/[^a-zA-Z]/g, "").slice(0, 2).toUpperCase(),
+    };
+  } catch {
+    return { digits: "0000", siglas: "AA" };
+  }
+}
+
+function writeStoredLote(digits: string, siglas: string) {
+  localStorage.setItem(LOTE_STORAGE_KEY, JSON.stringify({ digits, siglas }));
+}
 
 function getLocalDateKey(date = new Date()) {
   const y = date.getFullYear();
@@ -65,12 +108,13 @@ type CameraDevice = {
 
 type InfoCardProps = {
   title: string;
-  value: string;
+  value?: string;
   icon: ReactNode;
   accent?: "default" | "success" | "danger";
+  children?: ReactNode;
 };
 
-function InfoCard({ title, value, icon, accent = "default" }: InfoCardProps) {
+function InfoCard({ title, value, icon, accent = "default", children }: InfoCardProps) {
   const valueColor =
     accent === "success"
       ? "text-emerald-600"
@@ -79,16 +123,45 @@ function InfoCard({ title, value, icon, accent = "default" }: InfoCardProps) {
         : "text-slate-800";
 
   return (
-    <article className="flex min-h-[148px] flex-col items-center rounded-lg border border-slate-200 bg-white px-4 py-5 text-center shadow-sm">
-      <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-sky-50 text-sky-600">
+    <article className="info-card-3d flex min-h-[168px] flex-col items-center rounded-xl px-4 py-5 text-center transition-shadow">
+      <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full border border-sky-200 bg-sky-50 text-sky-600 shadow-sm">
         {icon}
       </div>
       <div className="text-sm font-semibold tracking-wide text-slate-600">{title}</div>
-      <div className={`mt-3 text-3xl font-bold md:text-4xl ${valueColor}`}>{value}</div>
-      <div className="mt-4 h-1 w-full max-w-[220px] overflow-hidden rounded-full bg-slate-200">
-        <div className="h-full w-[78%] rounded-full bg-sky-600" />
+      {children ?? (
+        <div className={`mt-3 text-3xl font-bold md:text-4xl ${valueColor}`}>{value}</div>
+      )}
+      <div className="mt-4 h-1.5 w-full max-w-[220px] overflow-hidden rounded-full border border-slate-300 bg-slate-200 shadow-inner">
+        <div className="h-full w-[78%] rounded-full bg-gradient-to-r from-sky-500 to-cyan-400 shadow-sm" />
       </div>
     </article>
+  );
+}
+
+function VideoDurationOverlay({
+  currentTime,
+  duration,
+}: {
+  currentTime: number;
+  duration: number;
+}) {
+  const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+
+  return (
+    <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-lg border border-white/20 bg-slate-950/85 px-3 py-2 shadow-lg backdrop-blur-sm">
+      <div className="mb-1.5 flex items-center justify-between gap-3 font-mono text-xs text-slate-200 sm:text-sm">
+        <span>Duração do vídeo</span>
+        <span className="font-semibold text-white">
+          {formatVideoTime(currentTime)} / {formatVideoTime(duration)}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-slate-700">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-500 transition-[width] duration-300"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -138,25 +211,24 @@ function ControlButton({
   tone?: "default" | "primary" | "success" | "danger" | "warning";
 }) {
   const toneClass =
-    tone === "primary"
-      ? "border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100"
-      : tone === "success"
-        ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-        : tone === "danger"
-          ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
-          : tone === "warning"
-            ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
-            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
+    tone === "success"
+      ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/35 hover:border-emerald-300"
+      : tone === "danger"
+        ? "border-rose-400/60 bg-rose-500/20 text-rose-100 hover:bg-rose-500/35 hover:border-rose-300"
+        : tone === "warning"
+          ? "border-amber-400/60 bg-amber-500/20 text-amber-100 hover:bg-amber-500/35 hover:border-amber-300"
+          : "border-slate-400/50 bg-slate-500/20 text-slate-100 hover:bg-slate-500/35";
 
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`flex min-w-[150px] flex-1 items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-45 sm:min-w-[170px] sm:flex-none ${toneClass}`}
+      aria-label={label}
+      title={label}
+      className={`flex h-14 w-14 items-center justify-center rounded-full border-2 shadow-lg backdrop-blur-md transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 sm:h-16 sm:w-16 ${toneClass}`}
     >
-      <span className="text-sky-600">{icon}</span>
-      <span>{label}</span>
+      {icon}
     </button>
   );
 }
@@ -264,6 +336,11 @@ export function ContagemDemoScreen() {
   const [paused, setPaused] = useState(false);
   const [completedDailyTotal, setCompletedDailyTotal] = useState(0);
   const [now, setNow] = useState(() => new Date());
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [selectedGranja, setSelectedGranja] = useState(GRANJA_OPTIONS[0]);
+  const [loteDigits, setLoteDigits] = useState("0000");
+  const [loteSiglas, setLoteSiglas] = useState("AA");
   const menuRef = useRef<HTMLDivElement>(null);
 
   const assertCameraSupported = useCallback(() => {
@@ -357,6 +434,15 @@ export function ContagemDemoScreen() {
     void refreshStatus();
     void loadCameras();
     setCompletedDailyTotal(readDailyTotal());
+    const storedGranja = readStoredGranja();
+    setSelectedGranja(
+      GRANJA_OPTIONS.includes(storedGranja as (typeof GRANJA_OPTIONS)[number])
+        ? (storedGranja as (typeof GRANJA_OPTIONS)[number])
+        : GRANJA_OPTIONS[0]
+    );
+    const storedLote = readStoredLote();
+    setLoteDigits(storedLote.digits);
+    setLoteSiglas(storedLote.siglas);
   }, [loadCameras, refreshStatus]);
 
   useEffect(() => {
@@ -533,6 +619,8 @@ export function ContagemDemoScreen() {
     setPaused(false);
     setPreviewOnly(false);
     setVideoFileName(null);
+    setVideoDuration(0);
+    setVideoCurrentTime(0);
     setCameraReady(false);
     setStreamInfo(null);
     clearPreviewSurfaces();
@@ -940,13 +1028,88 @@ export function ContagemDemoScreen() {
     return () => window.removeEventListener("mousedown", onPointerDown);
   }, [menuOpen]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !videoFileName) {
+      setVideoDuration(0);
+      setVideoCurrentTime(0);
+      return;
+    }
+
+    const syncDuration = () => {
+      setVideoDuration(Number.isFinite(video.duration) ? video.duration : 0);
+    };
+    const syncCurrentTime = () => {
+      setVideoCurrentTime(video.currentTime);
+    };
+
+    video.addEventListener("loadedmetadata", syncDuration);
+    video.addEventListener("durationchange", syncDuration);
+    video.addEventListener("timeupdate", syncCurrentTime);
+    syncDuration();
+    syncCurrentTime();
+
+    return () => {
+      video.removeEventListener("loadedmetadata", syncDuration);
+      video.removeEventListener("durationchange", syncDuration);
+      video.removeEventListener("timeupdate", syncCurrentTime);
+    };
+  }, [videoFileName, cameraReady]);
+
+  const handleGranjaChange = useCallback((value: string) => {
+    setSelectedGranja(value);
+    localStorage.setItem(GRANJA_STORAGE_KEY, value);
+  }, []);
+
+  const handleLoteDigitsChange = useCallback((value: string) => {
+    setLoteDigits(value.replace(/\D/g, "").slice(0, 4));
+  }, []);
+
+  const handleLoteSiglasChange = useCallback((value: string) => {
+    setLoteSiglas(value.replace(/[^a-zA-Z]/g, "").slice(0, 2).toUpperCase());
+  }, []);
+
+  const persistLote = useCallback((digits: string, siglas: string) => {
+    const normalizedDigits = digits.padStart(4, "0").slice(-4);
+    const normalizedSiglas = siglas.padEnd(2, "A").slice(0, 2).toUpperCase();
+    setLoteDigits(normalizedDigits);
+    setLoteSiglas(normalizedSiglas);
+    writeStoredLote(normalizedDigits, normalizedSiglas);
+  }, []);
+
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-4 py-6 md:px-8">
-      <header className="relative flex items-center justify-center border-b border-slate-200 pb-5 pt-2">
-        <h1 className="text-center text-2xl font-bold tracking-[0.12em] text-slate-800 md:text-3xl">
-          CONTADOR DE OVOS
-        </h1>
-        <div className="absolute right-0 top-0">
+      <header className="relative overflow-hidden border-b border-slate-200/80 pb-6 pt-4">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.12),transparent_55%)]"
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/70 to-transparent contador-title-glow"
+        />
+
+        <div className="relative flex flex-col items-center gap-3 px-20">
+          <div className="flex items-center gap-3">
+            <span className="h-px w-10 bg-gradient-to-r from-transparent to-cyan-500/80" />
+            <ScanEye className="h-6 w-6 text-cyan-500" strokeWidth={1.75} />
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.42em] text-cyan-600/90 sm:text-xs">
+              Egg Vision AI
+            </span>
+            <ScanEye className="h-6 w-6 text-cyan-500" strokeWidth={1.75} />
+            <span className="h-px w-10 bg-gradient-to-l from-transparent to-cyan-500/80" />
+          </div>
+
+          <h1 className="contador-title text-center text-3xl font-black tracking-[0.1em] md:text-4xl lg:text-5xl">
+            CONTADOR DE OVOS
+          </h1>
+
+          <p className="max-w-md text-center font-mono text-[11px] uppercase tracking-[0.28em] text-slate-500 sm:text-xs">
+            Visão computacional · contagem em tempo real
+          </p>
+        </div>
+
+        <div className="absolute right-0 top-1/2 -translate-y-1/2">
           <Image
             src="/logo-bica-meu-galo.png"
             alt="Bica Meu Galo"
@@ -1050,30 +1213,6 @@ export function ContagemDemoScreen() {
             }}
           />
         </div>
-
-        <div className="flex w-full max-w-3xl flex-wrap justify-center gap-3">
-          <ControlButton
-            icon={<Pause className="h-5 w-5" strokeWidth={1.75} />}
-            label="Pausar contagem"
-            tone="warning"
-            disabled={!running || paused || previewOnly || loading}
-            onClick={handlePause}
-          />
-          <ControlButton
-            icon={<Play className="h-5 w-5" strokeWidth={1.75} />}
-            label={awaitingVideoStart ? "Iniciar contagem" : "Retomar contagem"}
-            tone="success"
-            disabled={!canResumeCounting || loading}
-            onClick={() => void handleResume()}
-          />
-          <ControlButton
-            icon={<Square className="h-5 w-5" strokeWidth={1.75} />}
-            label="Parar contagem"
-            tone="danger"
-            disabled={(!running && !previewOnly && !cameraReady) || loading}
-            onClick={() => void handleStop()}
-          />
-        </div>
       </section>
 
       {(cameras.length > 0 && cameras.every((camera) => camera.label.startsWith("Câmera "))) ||
@@ -1109,40 +1248,71 @@ export function ContagemDemoScreen() {
       )}
 
       <section className="flex flex-col gap-3">
-        <div className="grid flex-1 gap-4 md:grid-cols-2">
-          <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <p className="border-b border-slate-100 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Ao vivo
-            </p>
-            <video ref={videoRef} className="hidden" autoPlay muted playsInline />
-            <canvas
-              ref={previewCanvasRef}
-              className="aspect-video w-full bg-slate-950 object-contain"
-            />
-            <canvas ref={captureCanvasRef} className="hidden" />
-            {!cameraReady && !running && !previewOnly && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-slate-900/75 p-4 text-center text-sm text-slate-200">
-                {loading ? "Carregando…" : "Abra o menu e selecione a câmera ou adicione um vídeo"}
-              </div>
-            )}
-            {awaitingVideoStart && (
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-slate-900/80 px-4 py-2 text-center text-sm text-slate-100">
-                Vídeo carregado. Clique em Iniciar contagem para começar.
-              </div>
-            )}
+        <div className="relative">
+          <div className="grid flex-1 gap-4 md:grid-cols-2">
+            <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <p className="border-b border-slate-100 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Ao vivo
+              </p>
+              <video ref={videoRef} className="hidden" autoPlay muted playsInline />
+              <canvas
+                ref={previewCanvasRef}
+                className="aspect-video w-full bg-slate-950 object-contain"
+              />
+              <canvas ref={captureCanvasRef} className="hidden" />
+              {!cameraReady && !running && !previewOnly && (
+                <div className="pointer-events-none absolute inset-0 top-9 flex items-center justify-center bg-slate-900/75 p-4 text-center text-sm text-slate-200">
+                  {loading ? "Carregando…" : "Abra o menu e selecione a câmera ou adicione um vídeo"}
+                </div>
+              )}
+              {awaitingVideoStart && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-slate-900/80 px-4 py-2 text-center text-sm text-slate-100">
+                  Vídeo carregado. Use o botão play para iniciar.
+                </div>
+              )}
+            </div>
+            <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <p className="border-b border-slate-100 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Processador
+              </p>
+              {preview ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={preview} alt="Frame processado" className="aspect-video w-full bg-slate-950 object-contain" />
+              ) : (
+                <div className="flex aspect-video items-center justify-center bg-slate-100 text-center text-sm text-slate-500">
+                  Preview do processador
+                </div>
+              )}
+              {videoFileName && videoDuration > 0 && (
+                <VideoDurationOverlay currentTime={videoCurrentTime} duration={videoDuration} />
+              )}
+            </div>
           </div>
-          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <p className="border-b border-slate-100 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Processador
-            </p>
-            {preview ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={preview} alt="Frame processado" className="aspect-video w-full bg-slate-950 object-contain" />
-            ) : (
-              <div className="flex aspect-video items-center justify-center bg-slate-100 text-center text-sm text-slate-500">
-                Preview do processador
-              </div>
-            )}
+
+          <div className="pointer-events-none absolute inset-0 top-9 flex items-center justify-center">
+            <div className="pointer-events-auto flex flex-col items-center gap-3 rounded-3xl border border-white/15 bg-slate-950/75 px-4 py-4 shadow-2xl shadow-slate-950/40 backdrop-blur-md sm:gap-4 sm:px-5 sm:py-5">
+              <ControlButton
+                icon={<Pause className="h-6 w-6 sm:h-7 sm:w-7" strokeWidth={1.75} />}
+                label="Pausar contagem"
+                tone="warning"
+                disabled={!running || paused || previewOnly || loading}
+                onClick={handlePause}
+              />
+              <ControlButton
+                icon={<Play className="h-6 w-6 sm:h-7 sm:w-7" strokeWidth={1.75} />}
+                label={awaitingVideoStart ? "Iniciar contagem" : "Retomar contagem"}
+                tone="success"
+                disabled={!canResumeCounting || loading}
+                onClick={() => void handleResume()}
+              />
+              <ControlButton
+                icon={<Square className="h-6 w-6 sm:h-7 sm:w-7" strokeWidth={1.75} />}
+                label="Parar contagem"
+                tone="danger"
+                disabled={(!running && !previewOnly && !cameraReady) || loading}
+                onClick={() => void handleStop()}
+              />
+            </div>
           </div>
         </div>
 
@@ -1172,18 +1342,56 @@ export function ContagemDemoScreen() {
         />
         <InfoCard
           title="NOME DA GRANJA"
-          value="GRANJA TESTE"
           icon={<Building2 className="h-5 w-5" strokeWidth={1.75} />}
-        />
+        >
+          <select
+            className="info-card-field mt-3 text-xs sm:text-sm"
+            value={selectedGranja}
+            disabled={running || loading}
+            onChange={(e) => handleGranjaChange(e.target.value)}
+          >
+            {GRANJA_OPTIONS.map((granja) => (
+              <option key={granja} value={granja}>
+                {granja}
+              </option>
+            ))}
+          </select>
+        </InfoCard>
       </section>
 
       <section className="flex justify-center">
         <div className="w-full max-w-sm">
-          <InfoCard
-            title="LOTE"
-            value="0000AA"
-            icon={<Layers className="h-5 w-5" strokeWidth={1.75} />}
-          />
+          <InfoCard title="LOTE" icon={<Layers className="h-5 w-5" strokeWidth={1.75} />}>
+            <div className="mt-3 flex w-full max-w-[220px] items-center justify-center gap-2">
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={4}
+                value={loteDigits}
+                disabled={running || loading}
+                onChange={(e) => handleLoteDigitsChange(e.target.value)}
+                onBlur={() => persistLote(loteDigits, loteSiglas)}
+                className="info-card-field w-[5.5rem] font-mono text-lg tracking-widest"
+                aria-label="Quatro dígitos do lote"
+                placeholder="0000"
+              />
+              <span className="text-xl font-bold text-slate-400">-</span>
+              <input
+                type="text"
+                maxLength={2}
+                value={loteSiglas}
+                disabled={running || loading}
+                onChange={(e) => handleLoteSiglasChange(e.target.value)}
+                onBlur={() => persistLote(loteDigits, loteSiglas)}
+                className="info-card-field w-[3.5rem] font-mono text-lg uppercase tracking-widest"
+                aria-label="Siglas do lote"
+                placeholder="AA"
+              />
+            </div>
+            <p className="mt-2 font-mono text-xs font-semibold text-slate-500">
+              {loteDigits.padStart(4, "0")}-{loteSiglas.padEnd(2, "A").slice(0, 2).toUpperCase()}
+            </p>
+          </InfoCard>
         </div>
       </section>
     </div>
