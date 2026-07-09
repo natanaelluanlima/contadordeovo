@@ -58,9 +58,11 @@ class ProcessadorSession:
                 raise RuntimeError("Nenhuma sessao ativa. Chame /v1/session/start antes de enviar frames.")
 
             result = self._service.process_frame(frame)
-            status = self._build_status()
-            status.update(result)
-            return status
+            return {
+                "state": self._state,
+                "mode": self._mode,
+                **result,
+            }
 
     def _build_status(self) -> dict[str, Any]:
         snapshot = self._service.snapshot_status()

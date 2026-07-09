@@ -31,6 +31,8 @@ from egg_counter.tracking import CentroidTracker
 logger = logging.getLogger(__name__)
 
 _FPS_WINDOW = 10
+_PREVIEW_SCALE = 0.55
+_PREVIEW_JPEG_QUALITY = 55
 
 
 @dataclass(slots=True)
@@ -58,6 +60,8 @@ class EggCounterService:
         self._last_roi = camera.roi
         self._last_line = camera.line
         self._profile_locked = False
+        self._geometry_cache: tuple[tuple[int, int], tuple[Any, Any, list[Any]]] | None = None
+        self._divider_zone_cache = None
 
     def configure_for_frame(self, frame: np.ndarray) -> None:
         height, width = frame.shape[:2]
@@ -91,6 +95,8 @@ class EggCounterService:
         self._last_annotated_frame_b64 = None
         self._last_roi = self.camera.roi
         self._last_line = self.camera.line
+        self._geometry_cache = None
+        self._divider_zone_cache = None
 
     def process_frame(self, frame: np.ndarray) -> dict[str, Any]:
         if not self._profile_locked:
@@ -100,8 +106,13 @@ class EggCounterService:
         result = self._run_pipeline(frame)
         self._update_fps(started_at)
 
-        debug_frame = self._draw_debug_frame(frame, result.tracked_objects, result.events)
-        self._last_annotated_frame_b64 = _encode_frame_b64(debug_frame, quality=62)
+        debug_frame = self._draw_debug_frame(
+            frame,
+            result.tracked_objects,
+            result.events,
+            preview_scale=_PREVIEW_SCALE,
+        )
+        self._last_annotated_frame_b64 = _encode_frame_b64(debug_frame, quality=_PREVIEW_JPEG_QUALITY)
         return self._build_frame_result(result.events)
 
     def process_stream(self, max_frames: int | None = None, display: bool = True) -> None:
@@ -130,17 +141,27 @@ class EggCounterService:
         cv2.destroyAllWindows()
 
     def _run_pipeline(self, frame: np.ndarray) -> FramePipelineResult:
-        roi, line, exclude_zones = scaled_geometry(
-            frame,
-            self.camera.width,
-            self.camera.height,
-            self.camera.roi,
-            self.camera.line,
-            self.camera.exclude_zones,
-        )
-        divider_zone = detect_center_divider_zone(frame)
-        if divider_zone is not None:
-            exclude_zones = [*exclude_zones, divider_zone]
+        height, width = frame.shape[:2]
+        size_key = (height, width)
+
+        if self._geometry_cache is not None and self._geometry_cache[0] == size_key:
+            roi, line, exclude_zones = self._geometry_cache[1]
+        else:
+            roi, line, exclude_zones = scaled_geometry(
+                frame,
+                self.camera.width,
+                self.camera.height,
+                self.camera.roi,
+                self.camera.line,
+                self.camera.exclude_zones,
+            )
+            if self._divider_zone_cache is None:
+                self._divider_zone_cache = detect_center_divider_zone(frame)
+            if self._divider_zone_cache is not None:
+                exclude_zones = [*exclude_zones, self._divider_zone_cache]
+            if self._profile_locked:
+                self._geometry_cache = (size_key, (roi, line, exclude_zones))
+
         self.counter.line = line
 
         prepared = preprocess_frame(
@@ -205,23 +226,36 @@ class EggCounterService:
         frame,
         tracked_objects: list[TrackedDetection],
         events: list[CountEvent],
+        preview_scale: float = 1.0,
     ):
-        overlay = frame.copy()
+        if preview_scale != 1.0:
+            height, width = frame.shape[:2]
+            scaled_width = max(1, int(width * preview_scale))
+            scaled_height = max(1, int(height * preview_scale))
+            overlay = cv2.resize(
+                frame,
+                (scaled_width, scaled_height),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            overlay = frame.copy()
+            preview_scale = 1.0
+
         roi_color = (255, 128, 0)
         line_color = (255, 128, 0)
         egg_color = (0, 0, 255)
 
         if self._last_roi.width > 0 and self._last_roi.height > 0:
-            x = self._last_roi.x
-            y = self._last_roi.y
-            w = self._last_roi.width
-            h = self._last_roi.height
+            x = int(self._last_roi.x * preview_scale)
+            y = int(self._last_roi.y * preview_scale)
+            w = int(self._last_roi.width * preview_scale)
+            h = int(self._last_roi.height * preview_scale)
             cv2.rectangle(overlay, (x, y), (x + w, y + h), roi_color, 2)
 
         cv2.line(
             overlay,
-            (self._last_line.x1, self._last_line.y1),
-            (self._last_line.x2, self._last_line.y2),
+            (int(self._last_line.x1 * preview_scale), int(self._last_line.y1 * preview_scale)),
+            (int(self._last_line.x2 * preview_scale), int(self._last_line.y2 * preview_scale)),
             line_color,
             2,
         )
@@ -231,7 +265,13 @@ class EggCounterService:
                 continue
 
             x1, y1, x2, y2 = tracked.bbox
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), egg_color, 2)
+            cv2.rectangle(
+                overlay,
+                (int(x1 * preview_scale), int(y1 * preview_scale)),
+                (int(x2 * preview_scale), int(y2 * preview_scale)),
+                egg_color,
+                2,
+            )
 
         total_text = f"TOTAL: {self.counter.total_count}"
         font = cv2.FONT_HERSHEY_SIMPLEX

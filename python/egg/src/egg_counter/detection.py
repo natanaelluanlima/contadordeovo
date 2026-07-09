@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -11,6 +12,16 @@ from egg_counter.config import RuntimeConfig
 from egg_counter.models import Detection
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _FrameCache:
+    gray: np.ndarray
+    hsv: np.ndarray
+    hole_radius: float
+    frame_hole_score: float
+    reference: np.ndarray | None
+    reference_aligned: bool
 
 
 def _bbox_overlap_ratio(
@@ -98,6 +109,9 @@ class ClassicBackend(InferenceBackend):
     def __init__(self, runtime: RuntimeConfig) -> None:
         self.diff_threshold = runtime.diff_threshold
         self._reference_gray: np.ndarray | None = None
+        self._reference_by_size: dict[tuple[int, int], np.ndarray] = {}
+        self._clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        self._frame_cache: _FrameCache | None = None
 
         if runtime.reference_image:
             reference_path = Path(runtime.reference_image)
@@ -118,55 +132,94 @@ class ClassicBackend(InferenceBackend):
                 )
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        hole_radius = self._estimate_hole_radius(frame)
-        candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
+        height, width = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hole_radius = self._estimate_hole_radius_from_gray(gray)
+        reference = self._get_reference_gray(width, height)
+        reference_aligned = (
+            reference is not None and float(cv2.absdiff(gray, reference).mean()) <= 30.0
+        )
+        self._frame_cache = _FrameCache(
+            gray=gray,
+            hsv=hsv,
+            hole_radius=hole_radius,
+            frame_hole_score=self._hole_regularity_score(gray, hole_radius),
+            reference=reference,
+            reference_aligned=reference_aligned,
+        )
 
-        reference_candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
-        reference_aligned = False
-        if self._reference_gray is not None:
-            reference_candidates = self._detect_by_reference_diff(frame, hole_radius)
-            reference_aligned = self._is_reference_aligned(frame)
+        try:
+            candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
+            reference_candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
+            if reference is not None:
+                reference_candidates = self._detect_by_reference_diff(frame, hole_radius)
 
-        if reference_aligned:
-            candidates = reference_candidates
-            if len(candidates) < 2:
-                candidates.extend(self._detect_by_low_contrast_egg(frame, hole_radius))
-        else:
-            candidates.extend(reference_candidates)
-            candidates.extend(self._detect_by_ellipse(frame, hole_radius))
-            candidates.extend(self._detect_by_brown_egg_color(frame, hole_radius))
-            if len(candidates) < 2:
-                candidates.extend(self._detect_by_low_contrast_egg(frame, hole_radius))
+            if reference_aligned:
+                candidates = reference_candidates
+                if len(candidates) < 2:
+                    candidates.extend(self._detect_by_low_contrast_egg(frame, hole_radius))
+            else:
+                candidates.extend(reference_candidates)
+                candidates.extend(self._detect_by_ellipse(frame, hole_radius))
+                candidates.extend(self._detect_by_brown_egg_color(frame, hole_radius))
+                if len(candidates) < 2:
+                    candidates.extend(self._detect_by_low_contrast_egg(frame, hole_radius))
 
-        validated = [
-            candidate
-            for candidate in candidates
-            if self._is_valid_egg_candidate(frame, candidate[0], hole_radius)
-        ]
-        merged = self._merge_candidates(validated, hole_radius)
+            validated = [
+                candidate
+                for candidate in candidates
+                if self._is_valid_egg_candidate(frame, candidate[0], hole_radius)
+            ]
+            merged = self._merge_candidates(validated, hole_radius)
 
-        detections: list[Detection] = []
-        for bbox, confidence in merged:
-            detections.append(
-                Detection(
-                    bbox=bbox,
-                    confidence=confidence,
-                    label="egg",
+            detections: list[Detection] = []
+            for bbox, confidence in merged:
+                detections.append(
+                    Detection(
+                        bbox=bbox,
+                        confidence=confidence,
+                        label="egg",
+                    )
                 )
+            return detections
+        finally:
+            self._frame_cache = None
+
+    def _get_reference_gray(self, width: int, height: int) -> np.ndarray | None:
+        if self._reference_gray is None:
+            return None
+        key = (width, height)
+        cached = self._reference_by_size.get(key)
+        if cached is None:
+            cached = cv2.resize(
+                self._reference_gray,
+                (width, height),
+                interpolation=cv2.INTER_LINEAR,
             )
-        return detections
+            self._reference_by_size[key] = cached
+        return cached
 
     def _is_reference_aligned(self, frame: np.ndarray) -> bool:
+        if self._frame_cache is not None:
+            return self._frame_cache.reference_aligned
         if self._reference_gray is None:
             return False
 
         height, width = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        reference = cv2.resize(self._reference_gray, (width, height), interpolation=cv2.INTER_LINEAR)
+        reference = self._get_reference_gray(width, height)
+        if reference is None:
+            return False
         return float(cv2.absdiff(gray, reference).mean()) <= 30.0
 
     def _estimate_hole_radius(self, frame: np.ndarray) -> float:
+        if self._frame_cache is not None:
+            return self._frame_cache.hole_radius
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return self._estimate_hole_radius_from_gray(gray)
+
+    def _estimate_hole_radius_from_gray(self, gray: np.ndarray) -> float:
         blur = cv2.GaussianBlur(gray, (9, 9), 2)
         circles = cv2.HoughCircles(
             blur,
@@ -214,10 +267,20 @@ class ClassicBackend(InferenceBackend):
         if self._reference_gray is None:
             return []
 
-        height, width = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        reference = cv2.resize(self._reference_gray, (width, height), interpolation=cv2.INTER_LINEAR)
+        cache = self._frame_cache
+        if cache is not None and cache.reference is not None:
+            gray = cache.gray
+            hsv = cache.hsv
+            reference = cache.reference
+        else:
+            height, width = frame.shape[:2]
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            reference = self._get_reference_gray(width, height)
+            if reference is None:
+                return []
+
+        height, width = gray.shape[:2]
         diff = cv2.absdiff(gray, reference)
         saturation = hsv[:, :, 1]
         value = hsv[:, :, 2]
@@ -292,13 +355,17 @@ class ClassicBackend(InferenceBackend):
         frame: np.ndarray,
         hole_radius: float,
     ) -> list[tuple[tuple[int, int, int, int], float, float]]:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        cache = self._frame_cache
+        if cache is not None:
+            gray = cache.gray
+            hsv = cache.hsv
+        else:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         height, width = gray.shape[:2]
         saturation = hsv[:, :, 1]
 
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
+        enhanced = self._clahe.apply(gray)
         blur = cv2.GaussianBlur(enhanced, (7, 7), 0)
         edges = cv2.Canny(blur, 28, 75)
         edges = cv2.dilate(
@@ -372,7 +439,8 @@ class ClassicBackend(InferenceBackend):
         frame: np.ndarray,
         hole_radius: float,
     ) -> list[tuple[tuple[int, int, int, int], float, float]]:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        cache = self._frame_cache
+        gray = cache.gray if cache is not None else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         height, width = gray.shape[:2]
         blur = cv2.GaussianBlur(gray, (9, 9), 2)
         edges = cv2.Canny(blur, 40, 120)
@@ -437,8 +505,13 @@ class ClassicBackend(InferenceBackend):
         frame: np.ndarray,
         hole_radius: float,
     ) -> list[tuple[tuple[int, int, int, int], float, float]]:
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        cache = self._frame_cache
+        if cache is not None:
+            hsv = cache.hsv
+            gray = cache.gray
+        else:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         height, width = gray.shape[:2]
         color_mask = (
             (hsv[:, :, 0] >= 5)
@@ -668,7 +741,11 @@ class ClassicBackend(InferenceBackend):
         return [(bbox, confidence) for bbox, confidence, _, _, _ in kept]
 
     def _remove_overlay_artifacts(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        cache = self._frame_cache
+        if cache is not None:
+            hsv = cache.hsv
+        else:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         overlay = cv2.bitwise_or(
             cv2.inRange(hsv, (35, 80, 80), (85, 255, 255)),
             cv2.inRange(hsv, (90, 80, 80), (130, 255, 255)),
@@ -685,12 +762,12 @@ class ClassicBackend(InferenceBackend):
             return False
         if self._is_hollow_belt_hole(frame, bbox, hole_radius):
             return False
-        if self._is_on_irregular_belt(frame, bbox, hole_radius):
-            return False
         if self._passes_low_contrast_egg_shape(frame, bbox, hole_radius):
             return True
         if self._passes_brown_egg_shape(frame, bbox, hole_radius):
             return True
+        if self._is_on_irregular_belt(frame, bbox, hole_radius):
+            return False
         return self._is_filled_egg_blob(frame, bbox, hole_radius)
 
     def _passes_brown_egg_shape(
@@ -846,7 +923,14 @@ class ClassicBackend(InferenceBackend):
 
         gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
         local_score = self._hole_regularity_score(gray, hole_radius)
-        frame_score = self._hole_regularity_score(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), hole_radius)
+        cache = self._frame_cache
+        if cache is not None:
+            frame_score = cache.frame_hole_score
+        else:
+            frame_score = self._hole_regularity_score(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),
+                hole_radius,
+            )
         threshold = max(0.08, frame_score * 0.5)
         return local_score <= threshold
 
