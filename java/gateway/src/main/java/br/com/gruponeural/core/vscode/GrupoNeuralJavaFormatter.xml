@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profiles version="12">
+    <profile kind="CodeFormatterProfile" name="GrupoNeuralJava" version="12">
+        <!-- Espaços -->
+        <setting id="org.eclipse.jdt.core.formatter.tabulation.char" value="space" />
+        <setting id="org.eclipse.jdt.core.formatter.tabulation.size" value="4" />
+        <setting id="org.eclipse.jdt.core.formatter.indentation.size" value="4" />
+
+        <!-- Largura máxima de linha -->
+        <setting id="org.eclipse.jdt.core.formatter.lineSplit" value="200" />
+
+        <!-- Mantém quebras -->
+        <setting id="org.eclipse.jdt.core.formatter.keep_line_breaks" value="true" />
+
+        <!-- Forçar quebra em "." -->
+        <setting id="org.eclipse.jdt.core.formatter.alignment_for_selector_in_method_invocation" value="52" />
+        <setting id="org.eclipse.jdt.core.formatter.alignment_for_arguments_in_method_invocation" value="52" />
+        <setting id="org.eclipse.jdt.core.formatter.alignment_for_multiple_fields" value="52" />
+
+        <!-- Forçar nova linha após anotações -->
+        <setting id="org.eclipse.jdt.core.formatter.insert_new_line_after_annotation_on_member" value="insert"/>
+        <setting id="org.eclipse.jdt.core.formatter.insert_new_line_after_annotation_on_method" value="insert"/>
+        <setting id="org.eclipse.jdt.core.formatter.insert_new_line_after_annotation_on_field" value="insert"/>
+        <setting id="org.eclipse.jdt.core.formatter.insert_new_line_after_annotation_on_type" value="insert"/>
+        <setting id="org.eclipse.jdt.core.formatter.insert_new_line_after_annotation_on_parameter" value="insert"/>
+        <setting id="org.eclipse.jdt.core.formatter.insert_new_line_after_annotation_on_local_variable" value="insert"/>
+
+        <!-- Não juntar linhas quebradas -->
+        <setting id="org.eclipse.jdt.core.formatter.join_wrapped_lines" value="false" />
+
+        <!-- Manter indentação limpa -->
+        <setting id="org.eclipse.jdt.core.formatter.continuation_indentation" value="1" />
+        <setting id="org.eclipse.jdt.core.formatter.continuation_indentation_for_array_initializer" value="1" />
+    </profile>
+</profiles>

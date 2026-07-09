@@ -1,0 +1,48 @@
+# Segredos e credenciais
+.env
+.env.local
+*.env.local
+chave git hub.txt
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Java / Quarkus
+target/
+*.class
+*.jar
+!.mvn/wrapper/*.jar
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Modelos e artefatos pesados
+*.pt
+*.onnx
+*.engine
+
+# Vídeos e mídia local
+videos/
+*.mp4
+*.avi
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.log
+
+# Análise temporária
+python/egg/config/analysis-*
+python/egg/config/debug-*
+python/egg/config/video-*-report.json
+python/egg/config/count-*
+python/egg/scripts/

@@ -1,0 +1,21 @@
+# Calibracao para: video ovos 3.mp4 (848x576, ovos sobem de baixo para cima)
+source: "videos/video-ovos-3.mp4"
+width: 848
+height: 576
+fps: 30
+show_window: true
+
+# Recorte da esteira (ignora faixa cinza a esquerda)
+roi:
+  x: 90
+  y: 40
+  width: 740
+  height: 500
+
+# Linha horizontal de contagem — o ovo e contado ao cruzar de baixo para cima
+line:
+  x1: 100
+  y1: 320
+  x2: 820
+  y2: 320
+  direction: bottom_to_top

@@ -1,0 +1,42 @@
+package br.com.gruponeural.application.usecase.screen.localizacao.impl;
+
+import java.util.List;
+
+import org.eclipse.microprofile.rest.client.inject.RestClient;
+
+import br.com.gruponeural.application.usecase.screen.localizacao.LocalizacaoScreenListarBairrosUseCase;
+import br.com.gruponeural.core.log.LogUtil;
+import br.com.gruponeural.dto.localizacao.LocalizacaoItemDTO;
+import br.com.gruponeural.infrastructure.restclient.cortex.localizacao.LocalizacaoRestClient;
+import io.smallrye.mutiny.Uni;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+
+@ApplicationScoped
+public class LocalizacaoScreenListarBairrosUseCaseImpl implements LocalizacaoScreenListarBairrosUseCase {
+
+    @Inject
+    @RestClient
+    LocalizacaoRestClient localizacaoRestClient;
+
+    @Override
+    public Uni<List<LocalizacaoItemDTO>> listar(String idCidade) {
+        return localizacaoRestClient
+            .listarBairros(idCidade)
+            .invoke(response -> LogUtil
+                .trace()
+                .setClass(this.getClass())
+                .setMethodName("listar")
+                .setValuesName("localizacaoBairros")
+                .setValues(response)
+                .build())
+            .onFailure()
+            .invoke(throwable -> LogUtil
+                .error()
+                .setClass(this.getClass())
+                .setMethodName("listar")
+                .setThrowable(throwable)
+                .setText("Erro ao listar bairros no MS Localizacao")
+                .build());
+    }
+}

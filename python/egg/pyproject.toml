@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "egg-counter"
+version = "0.1.0"
+description = "MVP para identificacao e contagem de ovos em esteira de producao."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "numpy>=1.26",
+  "opencv-python>=4.9",
+  "pydantic>=2.6",
+  "PyYAML>=6.0",
+  "python-multipart>=0.0.9",
+  "ultralytics>=8.1",
+  "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+egg-counter = "egg_counter.main:main"
+egg-processador = "egg_counter.processador_main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

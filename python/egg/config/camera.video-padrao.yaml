@@ -1,0 +1,27 @@
+# Calibracao para: videos/VIDEO PADRAO.mp4 (960x540, ovos marrons, esteira dupla)
+source: "../../videos/VIDEO PADRÃO.mp4"
+width: 960
+height: 540
+fps: 7
+show_window: true
+crop_roi: false
+
+roi:
+  x: 8
+  y: 6
+  width: 944
+  height: 528
+
+line:
+  x1: 10
+  y1: 270
+  x2: 950
+  y2: 270
+  direction: bottom_to_top
+
+# Divisor central + faixa da emenda (ovos passam pelas pistas laterais)
+exclude_zones:
+  - x: 330
+    y: 0
+    width: 300
+    height: 540

@@ -1,0 +1,4 @@
+[submodule "src/main/java/br/com/gruponeural/core"]
+	path = src/main/java/br/com/gruponeural/core
+	url = https://github.com/gruponeural/java-core.git
+	branch = develop

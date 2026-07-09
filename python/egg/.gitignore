@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Pesos e artefatos de inferencia (baixar localmente)
+*.pt
+*.onnx
+*.engine
+
+# Dados locais de teste
+debug_out/
+tests/videos/*.avi
+tests/videos/*.mp4
+videos/*.mp4
+videos/*.jpg
+videos/*.png
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

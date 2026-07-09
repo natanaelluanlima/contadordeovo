@@ -1,0 +1,13 @@
+# Runtime calibrado para VIDEO PADRAO.mp4 (esteira dupla, ovos marrons)
+backend: classic
+model_path: yolov8n.pt
+confidence: 0.35
+iou: 0.45
+target_label: egg
+reference_image: config/reference-video-padrao.jpg
+diff_threshold: 55
+match_distance: 90.0
+max_missing: 15
+normalize: false
+api_host: 0.0.0.0
+api_port: 9002

@@ -1,0 +1,22 @@
+# Calibracao para: videos/VIDEO PARA TESTES.mp4 (848x478, ovos brancos, esteira simples)
+source: "../../videos/VIDEO PARA TESTES.mp4"
+width: 848
+height: 478
+fps: 60
+show_window: true
+crop_roi: true
+
+# Recorte da esteira (ignora piso cinza a esquerda)
+roi:
+  x: 200
+  y: 16
+  width: 620
+  height: 446
+
+# Linha horizontal de contagem no centro da esteira
+line:
+  x1: 210
+  y1: 239
+  x2: 820
+  y2: 239
+  direction: bottom_to_top

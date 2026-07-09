@@ -1,0 +1,20 @@
+source: 0
+width: 848
+height: 478
+fps: 30
+show_window: true
+crop_roi: true
+
+# VIDEO PARA TESTES / camera browser (848x478)
+roi:
+  x: 200
+  y: 16
+  width: 620
+  height: 446
+
+line:
+  x1: 210
+  y1: 239
+  x2: 820
+  y2: 239
+  direction: bottom_to_top
