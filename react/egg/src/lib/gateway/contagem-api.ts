@@ -110,3 +110,21 @@ export async function enviarFrame(blob: Blob): Promise<ContagemStatus> {
   const image_b64 = await blobToBase64(blob);
   return enviarFrameBase64(image_b64);
 }
+
+/** Encerra processador, BFF, gateway, site e o launcher local. */
+export async function desligarContador(): Promise<void> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetch("http://127.0.0.1:8010/api/shutdown", {
+      method: "POST",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`Falha ao desligar (HTTP ${res.status})`);
+    }
+  } finally {
+    window.clearTimeout(timer);
+  }
+}

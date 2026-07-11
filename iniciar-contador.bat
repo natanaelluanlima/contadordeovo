@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\iniciar-contador.ps1" -AbrirNavegador
-pause
+REM Compatibilidade: redireciona para o launcher unico.
+call "%~dp0Contador de ovos.bat"

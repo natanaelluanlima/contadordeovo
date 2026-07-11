@@ -16,6 +16,7 @@ import {
   Play,
   PlayCircle,
   Power,
+  PowerOff,
   RefreshCw,
   RotateCcw,
   ScanEye,
@@ -25,6 +26,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
+  desligarContador,
   enviarFrameBase64,
   fetchContagemStatus,
   iniciarContagem,
@@ -450,6 +452,7 @@ export function ContagemDemoScreen() {
   const [streamInfo, setStreamInfo] = useState<string | null>(null);
   const [previewOnly, setPreviewOnly] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+  const [shutdownThanks, setShutdownThanks] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [paused, setPaused] = useState(false);
   const [completedDailyTotal, setCompletedDailyTotal] = useState(0);
@@ -1386,6 +1389,36 @@ export function ContagemDemoScreen() {
     }
   }, [accumulateSessionCount, clearOverlayTracks, pipelineReady, running, stopPlayback]);
 
+  const handleDesligarContador = useCallback(async () => {
+    setShutdownThanks(true);
+    setLoading(true);
+    setError(null);
+    setMenuOpen(false);
+
+    // Mostra o agradecimento e encerra sozinho
+    window.setTimeout(() => {
+      void (async () => {
+        try {
+          try {
+            await pararContagem();
+          } catch {
+            /* sessao pode ja estar idle */
+          }
+          stopPlayback();
+          await desligarContador();
+        } catch {
+          /* mesmo com falha de rede, tenta fechar a tela */
+        } finally {
+          window.setTimeout(() => {
+            window.close();
+            document.body.innerHTML =
+              '<main style="min-height:100vh;display:grid;place-items:center;font-family:Montserrat,system-ui,sans-serif;background:#2f3640;color:#f1f5f9"><div style="text-align:center;padding:2rem"><p style="color:#b5db5c;letter-spacing:.2em;font-size:.75rem;font-weight:700;text-transform:uppercase;margin:0 0 .5rem">Egg Vision AI</p><h1 style="margin:0 0 .75rem;font-size:1.75rem">Obrigado por usar o Contador de Ovos</h1><p style="margin:0;color:#94a3b8">Sistema encerrado. Pode fechar esta janela.</p></div></main>';
+          }, 400);
+        }
+      })();
+    }, 2800);
+  }, [stopPlayback]);
+
   const handlePause = useCallback(() => {
     stopCountingLoop();
     videoRef.current?.pause();
@@ -1624,6 +1657,39 @@ export function ContagemDemoScreen() {
 
   return (
     <div className="contador-shell mx-auto flex h-dvh max-h-dvh w-full max-w-7xl flex-col gap-1.5 overflow-hidden px-3 py-2 md:px-4">
+      {shutdownThanks && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-[#1a1f27]/72 px-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="shutdown-thanks-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-[var(--rovah-green)]/40 bg-[var(--rovah-dark)] px-6 py-7 text-center shadow-2xl">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.22em] text-[var(--rovah-green-light)]">
+              Egg Vision AI
+            </p>
+            <h2
+              id="shutdown-thanks-title"
+              className="mb-3 text-2xl font-extrabold tracking-wide text-white"
+            >
+              Obrigado por usar o Contador de Ovos
+            </h2>
+            <p className="mb-5 text-sm leading-relaxed text-slate-300">
+              Agradecemos a confiança na contagem da sua produção. Encerrando o
+              sistema automaticamente…
+            </p>
+            <div className="mx-auto h-1.5 w-40 overflow-hidden rounded-full bg-slate-700">
+              <div
+                className="h-full w-full rounded-full bg-[var(--rovah-green)]"
+                style={{
+                  transformOrigin: "left center",
+                  animation: "contadorShutdownBar 2.8s linear forwards",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       <header className="contador-header relative z-50 shrink-0 overflow-visible rounded-lg pb-1.5 pt-1.5">
         <div
           aria-hidden
@@ -1701,6 +1767,16 @@ export function ContagemDemoScreen() {
                       tone="primary"
                       disabled={running || loading}
                       onClick={() => fileInputRef.current?.click()}
+                    />
+                    <MenuItem
+                      icon={<PowerOff className="h-4 w-4" strokeWidth={1.75} />}
+                      label="Desligar contador"
+                      tone="danger"
+                      disabled={loading}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void handleDesligarContador();
+                      }}
                     />
                   </div>
                 </div>
@@ -1855,6 +1931,13 @@ export function ContagemDemoScreen() {
                   (!running && !previewOnly && !cameraReady) || loading || preparingPipeline
                 }
                 onClick={() => void handleStop()}
+              />
+              <ControlButton
+                icon={<PowerOff className="h-5 w-5" strokeWidth={1.75} />}
+                label="Desligar contador"
+                tone="danger"
+                disabled={loading}
+                onClick={() => void handleDesligarContador()}
               />
             </div>
           </div>

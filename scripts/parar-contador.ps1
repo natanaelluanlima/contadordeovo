@@ -1,5 +1,5 @@
-# Encerra os servicos do Egg pelas portas 8009, 9000, 9001 e 9002.
-$ports = @(8009, 9000, 9001, 9002, 5005, 5006)
+# Encerra os servicos do Egg + launcher (porta 8010).
+$ports = @(8010, 8009, 9000, 9001, 9002, 5005, 5006)
 
 foreach ($port in $ports) {
     $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue

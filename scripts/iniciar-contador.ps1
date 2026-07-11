@@ -121,8 +121,7 @@ Write-Host ""
 Write-Host "Servicos iniciados em segundo plano (sem janelas extras)." -ForegroundColor Green
 Write-Host "Demo: http://localhost:8009/contagem" -ForegroundColor Cyan
 Write-Host "Logs: $logsDir" -ForegroundColor Cyan
-Write-Host "Aguarde ~1 minuto para o BFF e o gateway terminarem de subir." -ForegroundColor Yellow
-Write-Host "Para encerrar: scripts\parar-contador.ps1" -ForegroundColor Yellow
+Write-Host "Aguarde o launcher liberar o botao Abrir." -ForegroundColor Yellow
 
 if ($AbrirNavegador) {
     Start-Sleep -Seconds 20

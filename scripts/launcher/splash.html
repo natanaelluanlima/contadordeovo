@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Contador de Ovos</title>
+  <style>
+    :root {
+      --green: #9bcb3b;
+      --green-dark: #7fab2e;
+      --green-light: #b5db5c;
+      --dark: #2f3640;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --red: #ff3b3b;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: "Segoe UI", Montserrat, system-ui, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(ellipse 70% 45% at 20% 0%, rgba(155, 203, 59, 0.16), transparent 50%),
+        radial-gradient(ellipse 60% 40% at 90% 100%, rgba(56, 189, 248, 0.08), transparent 45%),
+        linear-gradient(165deg, #161b22 0%, var(--dark) 48%, #222831 100%);
+      overflow: hidden;
+    }
+    .stage {
+      min-height: 100%;
+      display: grid;
+      place-items: center;
+      padding: 1.5rem;
+    }
+    .shell {
+      width: min(1040px, 100%);
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 1.25rem;
+      align-items: stretch;
+      animation: rise 0.7s ease-out both;
+    }
+    @media (max-width: 860px) {
+      .shell { grid-template-columns: 1fr; }
+      body { overflow: auto; }
+    }
+
+    .hero {
+      position: relative;
+      border-radius: 1.15rem;
+      overflow: hidden;
+      border: 1px solid rgba(155, 203, 59, 0.28);
+      background: #111827;
+      min-height: 420px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+    }
+    .slides { position: absolute; inset: 0; }
+    .slide {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      transform: scale(1.04);
+      transition: opacity 0.9s ease, transform 6s ease;
+      background-size: cover;
+      background-position: center;
+    }
+    .slide.on { opacity: 1; transform: scale(1); z-index: 1; }
+    .hero-veil {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      background: linear-gradient(180deg, rgba(22,27,34,0.1) 0%, rgba(22,27,34,0.55) 70%, rgba(22,27,34,0.85) 100%);
+      pointer-events: none;
+    }
+    .dots {
+      position: absolute;
+      left: 1.1rem;
+      bottom: 1.1rem;
+      z-index: 3;
+      display: flex;
+      gap: 0.4rem;
+    }
+    .dots button {
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 999px;
+      border: none;
+      padding: 0;
+      background: rgba(241, 245, 249, 0.35);
+      cursor: pointer;
+    }
+    .dots button.on { width: 1.2rem; background: var(--green); }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.9rem;
+      padding: 1.25rem 1.3rem 1.35rem;
+      border-radius: 1.15rem;
+      background: rgba(58, 66, 78, 0.48);
+      border: 1px solid rgba(155, 203, 59, 0.28);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.28);
+    }
+    .brand-row { display: flex; align-items: center; gap: 0.85rem; }
+    .egg-art {
+      width: 56px;
+      height: 70px;
+      position: relative;
+      flex-shrink: 0;
+      filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.35));
+    }
+    .egg-art svg { width: 100%; height: 100%; display: block; }
+    .egg-art .shine {
+      position: absolute;
+      inset: 16% 14%;
+      border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+      background: radial-gradient(circle at 32% 28%, rgba(255,255,255,0.45), transparent 55%);
+      animation: breathe 2.4s ease-in-out infinite;
+      pointer-events: none;
+    }
+    .brand-copy .eyebrow {
+      margin: 0 0 0.2rem;
+      color: var(--green-light);
+      letter-spacing: 0.22em;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .brand-copy h1 {
+      margin: 0;
+      font-size: clamp(1.2rem, 2.2vw, 1.6rem);
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      line-height: 1.1;
+    }
+
+    .meter {
+      display: flex;
+      justify-content: flex-end;
+      font-variant-numeric: tabular-nums;
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--green-light);
+    }
+
+    .line {
+      position: relative;
+      height: 78px;
+      border-radius: 0.85rem;
+      overflow: hidden;
+      background: linear-gradient(180deg, #0a0f18 0%, #111827 40%, #0b1220 100%);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .line-glow {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 78% 40%, rgba(255,59,59,0.14), transparent 48%);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.35s ease;
+    }
+    .line.scanning .line-glow { opacity: 1; }
+
+    .belt {
+      position: absolute;
+      left: -10%;
+      right: -10%;
+      top: 46px;
+      height: 22px;
+      border-radius: 999px;
+      background: #1f2937;
+      box-shadow:
+        inset 0 2px 0 rgba(255,255,255,0.06),
+        inset 0 -3px 0 rgba(0,0,0,0.45),
+        0 10px 18px rgba(0,0,0,0.35);
+      overflow: hidden;
+    }
+    .belt-mesh,
+    .belt-perforation {
+      position: absolute;
+      inset: 0;
+      /* Mesmo sentido do ovo: esquerda -> direita */
+      animation: belt-run 0.7s linear infinite;
+    }
+    .belt-mesh {
+      background:
+        repeating-linear-gradient(
+          90deg,
+          #374151 0 9px,
+          #111827 9px 11px,
+          #4b5563 11px 20px
+        );
+      opacity: 0.95;
+    }
+    .belt-perforation {
+      inset: 5px 0;
+      background: radial-gradient(circle, #0b1220 0 2px, transparent 2.4px) 0 0 / 12px 12px;
+      opacity: 0.9;
+    }
+    .belt-edge {
+      position: absolute;
+      left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, #64748b, #94a3b8, #64748b);
+      opacity: 0.55;
+    }
+    .belt-edge.top { top: 0; }
+    .belt-edge.bottom { bottom: 0; }
+
+    .egg {
+      position: absolute;
+      top: 12px;
+      left: 8%;
+      width: 34px;
+      height: 42px;
+      margin-left: -17px;
+      z-index: 6;
+      will-change: left, transform;
+      filter: drop-shadow(0 5px 7px rgba(0,0,0,0.45));
+    }
+    .egg svg { width: 100%; height: 100%; display: block; }
+    .egg.scanning { filter: drop-shadow(0 0 10px rgba(255,59,59,0.65)); }
+    .egg.done { filter: drop-shadow(0 0 10px rgba(155,203,59,0.75)); }
+
+    .robot {
+      position: absolute;
+      top: 2px;
+      right: 10%;
+      width: 64px;
+      height: 64px;
+      z-index: 5;
+      opacity: 0.35;
+      transform: translateY(2px) scale(0.96);
+      transition: opacity 0.35s ease, transform 0.35s ease, filter 0.35s ease;
+    }
+    .robot.on {
+      opacity: 1;
+      transform: none;
+      filter: drop-shadow(0 0 14px rgba(255, 59, 59, 0.4));
+    }
+    .robot-body {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      top: 0;
+      height: 34px;
+      border-radius: 10px 10px 6px 6px;
+      background: linear-gradient(180deg, #e2e8f0 0%, #94a3b8 35%, #475569 100%);
+      border: 1px solid rgba(255,255,255,0.25);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.45), 0 6px 12px rgba(0,0,0,0.35);
+    }
+    .robot-visor {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      top: 8px;
+      height: 12px;
+      border-radius: 4px;
+      background: linear-gradient(90deg, #0f172a, #1e293b);
+      overflow: hidden;
+    }
+    .robot-visor i {
+      position: absolute;
+      inset: 2px auto 2px 0;
+      width: 18px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, transparent, var(--red), transparent);
+      opacity: 0.2;
+    }
+    .robot.on .robot-visor i {
+      opacity: 1;
+      animation: visor-scan 0.85s linear infinite;
+      box-shadow: 0 0 10px rgba(255,59,59,0.9);
+    }
+    .robot-eye {
+      position: absolute;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      top: 23px;
+      background: #64748b;
+    }
+    .robot-eye.l { left: 14px; }
+    .robot-eye.r { right: 14px; }
+    .robot.on .robot-eye {
+      background: var(--red);
+      box-shadow: 0 0 8px rgba(255,59,59,0.95);
+      animation: eye-blink 1s ease-in-out infinite;
+    }
+    .robot.done .robot-eye {
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(155,203,59,0.95);
+      animation: none;
+    }
+    .robot-arm {
+      position: absolute;
+      top: 30px;
+      width: 8px;
+      height: 22px;
+      border-radius: 3px;
+      background: linear-gradient(180deg, #cbd5e1, #64748b);
+    }
+    .robot-arm.l { left: 6px; transform: rotate(12deg); }
+    .robot-arm.r { right: 6px; transform: rotate(-12deg); }
+    .robot-claw {
+      position: absolute;
+      bottom: -2px;
+      left: 50%;
+      width: 12px;
+      height: 8px;
+      margin-left: -6px;
+      border: 2px solid #94a3b8;
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+    }
+    .robot-beam {
+      position: absolute;
+      left: 50%;
+      top: 36px;
+      width: 3px;
+      height: 0;
+      margin-left: -1.5px;
+      border-radius: 2px;
+      background: linear-gradient(180deg, #fecaca, rgba(255,59,59,0.05));
+      box-shadow: 0 0 12px rgba(255,59,59,1), 0 0 22px rgba(255,59,59,0.55);
+      opacity: 0;
+      transform-origin: top;
+    }
+    .robot.on .robot-beam {
+      opacity: 1;
+      animation: beam 0.65s ease-in-out infinite;
+    }
+    .robot.done .robot-beam { display: none; }
+    .robot-fan {
+      position: absolute;
+      left: 50%;
+      top: 34px;
+      width: 34px;
+      height: 30px;
+      margin-left: -17px;
+      background: linear-gradient(180deg, rgba(255,59,59,0.45), transparent 85%);
+      clip-path: polygon(50% 0, 0 100%, 100% 100%);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .robot.on .robot-fan {
+      opacity: 1;
+      animation: fan 0.65s ease-in-out infinite;
+    }
+    .robot.done .robot-fan { display: none; }
+    .robot-ring {
+      position: absolute;
+      left: 50%;
+      top: 38px;
+      width: 36px;
+      height: 36px;
+      margin-left: -18px;
+      border-radius: 50%;
+      border: 1.5px dashed rgba(255,59,59,0.6);
+      opacity: 0;
+    }
+    .robot.on .robot-ring {
+      opacity: 1;
+      animation: spin 2s linear infinite;
+    }
+    .robot.done .robot-ring {
+      border-color: rgba(155,203,59,0.75);
+      border-style: solid;
+      animation: none;
+      opacity: 1;
+    }
+
+    /* Arte final diferente — faixa de liberação (não cobre o Abrir) */
+    .complete-art {
+      display: none;
+      border-radius: 0.9rem;
+      overflow: hidden;
+      border: 1px solid rgba(155, 203, 59, 0.4);
+      background: linear-gradient(135deg, #1a2330 0%, #243042 55%, #1b2a1f 100%);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+      animation: pop-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    .complete-art.show { display: block; }
+    .complete-banner {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.75rem 0.85rem;
+      position: relative;
+    }
+    .complete-banner::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: linear-gradient(180deg, var(--green-light), var(--green-dark));
+    }
+    .complete-visual {
+      width: 64px;
+      height: 64px;
+      border-radius: 0.85rem;
+      background:
+        radial-gradient(circle at 50% 40%, rgba(155, 203, 59, 0.25), transparent 60%),
+        #0f172a;
+      border: 1px solid rgba(155, 203, 59, 0.35);
+      display: grid;
+      place-items: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .complete-visual .mini-belt {
+      position: absolute;
+      left: -10%;
+      right: -10%;
+      bottom: 10px;
+      height: 8px;
+      background: repeating-linear-gradient(90deg, #374151 0 5px, #111827 5px 7px);
+      animation: belt-run 0.8s linear infinite;
+      opacity: 0.85;
+    }
+    .complete-visual .mini-egg {
+      width: 22px;
+      height: 28px;
+      border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+      background: linear-gradient(160deg, #fff, #e2e8f0);
+      box-shadow: 0 0 0 2px rgba(155, 203, 59, 0.35), 0 4px 8px rgba(0,0,0,0.35);
+      position: relative;
+      z-index: 1;
+      animation: mini-egg-pop 0.6s ease both;
+    }
+    .complete-visual .stamp {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--green);
+      color: #14532d;
+      font-size: 0.65rem;
+      font-weight: 800;
+      display: grid;
+      place-items: center;
+      box-shadow: 0 0 8px rgba(155, 203, 59, 0.7);
+      z-index: 2;
+    }
+    .complete-copy .eyebrow {
+      margin: 0 0 0.2rem;
+      color: var(--green-light);
+      letter-spacing: 0.16em;
+      font-size: 0.6rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .complete-copy h2 {
+      margin: 0 0 0.25rem;
+      font-size: 1rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+    .complete-copy p {
+      margin: 0;
+      color: #cbd5e1;
+      font-size: 0.74rem;
+      line-height: 1.35;
+    }
+
+    .steps {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.35rem 0.7rem;
+    }
+    .steps li {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+    .dot {
+      width: 0.4rem;
+      height: 0.4rem;
+      border-radius: 50%;
+      background: #64748b;
+      flex-shrink: 0;
+    }
+    .steps li.on { color: #e2e8f0; }
+    .steps li.on .dot {
+      background: var(--green);
+      box-shadow: 0 0 7px rgba(155, 203, 59, 0.8);
+    }
+
+    button#btn-open {
+      appearance: none;
+      border: none;
+      border-radius: 0.75rem;
+      padding: 0.9rem 1rem;
+      font-size: 0.95rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      background: linear-gradient(180deg, var(--green-light), var(--green-dark));
+      color: #1a1f27;
+      opacity: 0.35;
+      cursor: not-allowed;
+      transition: opacity 0.25s ease, filter 0.2s ease, transform 0.15s ease;
+      position: relative;
+      z-index: 5;
+    }
+    button#btn-open.ready {
+      opacity: 1;
+      cursor: pointer;
+      animation: glow 1.6s ease-in-out infinite;
+    }
+    button#btn-open.ready:hover { filter: brightness(1.06); }
+    .error {
+      color: #fda4af;
+      font-size: 0.78rem;
+      text-align: center;
+      display: none;
+      margin: 0;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(14px); }
+      to { opacity: 1; transform: none; }
+    }
+    @keyframes breathe {
+      0%, 100% { opacity: 0.35; transform: scale(0.96); }
+      50% { opacity: 0.75; transform: scale(1); }
+    }
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(155, 203, 59, 0.35); }
+      50% { box-shadow: 0 0 0 10px rgba(155, 203, 59, 0); }
+    }
+    /* Esteira no mesmo sentido do ovo (→) */
+    @keyframes belt-run {
+      from { transform: translateX(-20px); }
+      to { transform: translateX(0); }
+    }
+    @keyframes visor-scan {
+      from { left: -20%; }
+      to { left: 110%; }
+    }
+    @keyframes eye-blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    @keyframes beam {
+      0%, 100% { height: 8px; opacity: 0.45; }
+      50% { height: 30px; opacity: 1; }
+    }
+    @keyframes fan {
+      0%, 100% { opacity: 0.25; }
+      50% { opacity: 0.85; }
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pop-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.96); }
+      to { opacity: 1; transform: none; }
+    }
+    @keyframes mini-egg-pop {
+      from { transform: translateY(6px) scale(0.8); opacity: 0; }
+      to { transform: none; opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <div class="shell">
+      <section class="hero" aria-label="Imagens da produção">
+        <div class="slides" id="slides">
+          <div class="slide on" style="background-image:url('/media/granja.png')"></div>
+          <div class="slide" style="background-image:url('/media/aves.png')"></div>
+          <div class="slide" style="background-image:url('/media/ovos.png')"></div>
+          <div class="slide" style="background-image:url('/media/produtor.png')"></div>
+        </div>
+        <div class="hero-veil"></div>
+        <div class="dots" id="dots" aria-hidden="true"></div>
+      </section>
+
+      <section class="panel">
+        <div class="brand-row">
+          <div class="egg-art" aria-hidden="true">
+            <div class="shine"></div>
+            <svg viewBox="0 0 120 150" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <ellipse cx="60" cy="82" rx="46" ry="58" fill="#f8fafc"/>
+              <ellipse cx="60" cy="82" rx="46" ry="58" fill="url(#eggShade)" fill-opacity="0.35"/>
+              <path d="M38 70c8-18 28-28 44-18" stroke="#9bcb3b" stroke-width="4" stroke-linecap="round"/>
+              <circle cx="78" cy="58" r="7" fill="#9bcb3b"/>
+              <defs>
+                <linearGradient id="eggShade" x1="30" y1="30" x2="90" y2="130">
+                  <stop stop-color="#ffffff" stop-opacity="0"/>
+                  <stop offset="1" stop-color="#94a3b8"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <p class="eyebrow">Egg Vision AI</p>
+            <h1>Contador de Ovos</h1>
+          </div>
+        </div>
+
+        <div class="meter"><span id="percent">0%</span></div>
+
+        <div class="line" id="line" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="line-glow"></div>
+          <div class="belt">
+            <div class="belt-edge top"></div>
+            <div class="belt-mesh"></div>
+            <div class="belt-perforation"></div>
+            <div class="belt-edge bottom"></div>
+          </div>
+
+          <div class="robot" id="robot" aria-hidden="true">
+            <div class="robot-body">
+              <div class="robot-visor"><i></i></div>
+              <span class="robot-eye l"></span>
+              <span class="robot-eye r"></span>
+            </div>
+            <div class="robot-arm l"><span class="robot-claw"></span></div>
+            <div class="robot-arm r"><span class="robot-claw"></span></div>
+            <div class="robot-ring"></div>
+            <div class="robot-fan"></div>
+            <div class="robot-beam"></div>
+          </div>
+
+          <div class="egg" id="egg" style="left: 8%;" aria-hidden="true">
+            <svg viewBox="0 0 80 100" xmlns="http://www.w3.org/2000/svg">
+              <ellipse cx="40" cy="56" rx="28" ry="36" fill="#f8fafc"/>
+              <ellipse cx="40" cy="56" rx="28" ry="36" fill="url(#rideShade)" fill-opacity="0.4"/>
+              <ellipse cx="30" cy="42" rx="8" ry="12" fill="rgba(255,255,255,0.55)"/>
+              <defs>
+                <linearGradient id="rideShade" x1="20" y1="20" x2="60" y2="90">
+                  <stop stop-color="#fff" stop-opacity="0"/>
+                  <stop offset="1" stop-color="#94a3b8"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+        </div>
+
+        <div class="complete-art" id="completeArt" aria-hidden="true">
+          <div class="complete-banner">
+            <div class="complete-visual" aria-hidden="true">
+              <div class="mini-belt"></div>
+              <div class="mini-egg"></div>
+              <div class="stamp">✓</div>
+            </div>
+            <div class="complete-copy">
+              <p class="eyebrow">Linha liberada</p>
+              <h2>Carregamento completo</h2>
+              <p>Leitura do ovo confirmada. Pode iniciar o programa.</p>
+            </div>
+          </div>
+        </div>
+
+        <ul class="steps" id="steps">
+          <li data-key="processador"><span class="dot"></span>Processador</li>
+          <li data-key="bff"><span class="dot"></span>BFF</li>
+          <li data-key="gateway"><span class="dot"></span>Gateway</li>
+          <li data-key="site"><span class="dot"></span>Interface</li>
+        </ul>
+
+        <button id="btn-open" type="button" disabled>Abrir</button>
+        <p class="error" id="error"></p>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const APP_URL = "http://localhost:8009/contagem";
+    const ORDER = ["processador", "bff", "gateway", "site"];
+    const SCAN_AT = 58; // leitura antes do fim do carregamento
+
+    const btn = document.getElementById("btn-open");
+    const percentEl = document.getElementById("percent");
+    const errorEl = document.getElementById("error");
+    const line = document.getElementById("line");
+    const egg = document.getElementById("egg");
+    const robot = document.getElementById("robot");
+    const completeArt = document.getElementById("completeArt");
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const dotsWrap = document.getElementById("dots");
+
+    let servicesReady = false;
+    let opening = false;
+    let targetPct = 0;
+    let animPct = 0;
+    let displayPct = 0;
+    let slideIndex = 0;
+    let lastTs = performance.now();
+
+    let scanStarted = false;
+    let scanning = false;
+    let scanned = false;
+    let finished = false;
+
+    slides.forEach((_, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = i === 0 ? "on" : "";
+      b.addEventListener("click", () => showSlide(i));
+      dotsWrap.appendChild(b);
+    });
+    const dots = Array.from(dotsWrap.querySelectorAll("button"));
+
+    function showSlide(i) {
+      slideIndex = i;
+      slides.forEach((el, idx) => el.classList.toggle("on", idx === i));
+      dots.forEach((el, idx) => el.classList.toggle("on", idx === i));
+    }
+    setInterval(() => {
+      if (!document.hidden) showSlide((slideIndex + 1) % slides.length);
+    }, 4200);
+
+    function eggLeft(pct) {
+      // 8% -> 82% sob o scanner
+      return 8 + (Math.max(0, Math.min(100, pct)) / 100) * 74;
+    }
+
+    function render(pct) {
+      const value = Math.max(0, Math.min(100, pct));
+      percentEl.textContent = Math.round(value) + "%";
+      line.setAttribute("aria-valuenow", String(Math.round(value)));
+
+      const x = eggLeft(value);
+      const bob = Math.sin(value * 0.35) * 1.15;
+      egg.style.left = x + "%";
+      egg.style.transform = "translateY(" + bob + "px)";
+
+      if (finished) {
+        robot.classList.add("on", "done");
+        line.classList.remove("scanning");
+        egg.classList.remove("scanning");
+        egg.classList.add("done");
+      } else if (scanning || (value >= SCAN_AT && !scanned)) {
+        robot.classList.add("on");
+        robot.classList.remove("done");
+        line.classList.add("scanning");
+        egg.classList.add("scanning");
+        egg.classList.remove("done");
+      } else if (scanned) {
+        robot.classList.add("on", "done");
+        line.classList.remove("scanning");
+        egg.classList.remove("scanning");
+        egg.classList.add("done");
+      } else {
+        robot.classList.remove("on", "done");
+        line.classList.remove("scanning");
+        egg.classList.remove("scanning", "done");
+      }
+    }
+
+    function setStep(key, on) {
+      const li = document.querySelector('.steps li[data-key="' + key + '"]');
+      if (li) li.classList.toggle("on", on);
+    }
+
+    function startScan() {
+      if (scanStarted) return;
+      scanStarted = true;
+      scanning = true;
+      // Continua o deslocamento do ovo enquanto o scanner lê
+      targetPct = Math.max(targetPct, 78);
+
+      window.setTimeout(() => {
+        scanning = false;
+        scanned = true;
+        render(displayPct);
+        targetPct = 100;
+      }, 1200);
+    }
+
+    function finishAndEnable() {
+      if (finished) return;
+      finished = true;
+      completeArt.classList.add("show");
+      completeArt.setAttribute("aria-hidden", "false");
+      btn.disabled = false;
+      btn.classList.add("ready");
+      render(100);
+    }
+
+    function animate(ts) {
+      const dt = Math.min(0.05, (ts - lastTs) / 1000);
+      lastTs = ts;
+
+      // Ovo sempre em movimento (não trava no scanner)
+      let speed = 40;
+      if (scanning) speed = 34;
+      else if (scanned && !finished) speed = 50;
+
+      if (animPct < targetPct) animPct = Math.min(targetPct, animPct + speed * dt);
+      else if (animPct > targetPct) animPct = targetPct;
+
+      displayPct = animPct;
+      render(displayPct);
+
+      if (!scanStarted && displayPct >= SCAN_AT && (servicesReady || displayPct >= 55)) {
+        startScan();
+      }
+
+      if (scanned && displayPct >= 99.5 && servicesReady) {
+        finishAndEnable();
+      }
+
+      requestAnimationFrame(animate);
+    }
+    requestAnimationFrame(animate);
+
+    async function poll() {
+      try {
+        const res = await fetch("/api/status", { cache: "no-store" });
+        if (!res.ok) throw new Error("Status HTTP " + res.status);
+        const data = await res.json();
+        errorEl.style.display = "none";
+
+        const services = data.services || {};
+        let readyCount = 0;
+        for (const key of ORDER) {
+          const on = !!services[key];
+          setStep(key, on);
+          if (on) readyCount += 1;
+        }
+
+        if (!scanned) {
+          let staged = Math.min(72, readyCount * 15 + 5);
+          if (readyCount >= 3) staged = Math.max(staged, SCAN_AT + 4);
+          if (scanning) staged = Math.max(staged, 78);
+          if (staged > targetPct) targetPct = staged;
+          else if (!data.ready && readyCount === 0 && targetPct < 6) {
+            targetPct = Math.min(6, targetPct + 0.8);
+          }
+        }
+
+        if (data.error) {
+          errorEl.style.display = "block";
+          errorEl.textContent = data.error;
+        }
+
+        if (data.ready) {
+          servicesReady = true;
+          if (!scanStarted && displayPct >= SCAN_AT - 2) startScan();
+          if (scanned) targetPct = 100;
+          return;
+        }
+      } catch (err) {
+        errorEl.style.display = "block";
+        errorEl.textContent = "Aguardando…";
+        if (targetPct < 4) targetPct = 4;
+      }
+      setTimeout(poll, 900);
+    }
+
+    btn.addEventListener("click", () => {
+      if (!finished || opening) return;
+      opening = true;
+      btn.textContent = "Abrindo…";
+      window.location.href = APP_URL;
+    });
+
+    poll();
+  </script>
+</body>
+</html>

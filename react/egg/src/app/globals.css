@@ -184,3 +184,12 @@ body {
 .text-value-success {
   color: var(--rovah-green-dark);
 }
+
+@keyframes contadorShutdownBar {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
