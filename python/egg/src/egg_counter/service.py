@@ -31,8 +31,9 @@ from egg_counter.tracking import CentroidTracker
 logger = logging.getLogger(__name__)
 
 _FPS_WINDOW = 10
-_PREVIEW_SCALE = 0.55
+_PREVIEW_SCALE = 0.7
 _PREVIEW_JPEG_QUALITY = 55
+_ANNOTATE_EVERY_N = 3
 
 
 @dataclass(slots=True)
@@ -49,6 +50,7 @@ class EggCounterService:
         self.tracker = CentroidTracker(
             max_distance=runtime.match_distance,
             max_missing=runtime.max_missing,
+            min_hits=1,
         )
         self.counter = LineCounter(camera.line)
         self._last_fps = 0.0
@@ -57,9 +59,12 @@ class EggCounterService:
         self._last_event: CountEvent | None = None
         self._last_events: list[CountEvent] = []
         self._last_annotated_frame_b64: str | None = None
+        self._last_tracked: list[TrackedDetection] = []
+        self._annotate_counter = 0
         self._last_roi = camera.roi
         self._last_line = camera.line
         self._profile_locked = False
+        self._active_profile: str | None = None
         self._geometry_cache: tuple[tuple[int, int], tuple[Any, Any, list[Any]]] | None = None
         self._divider_zone_cache = None
 
@@ -70,21 +75,52 @@ class EggCounterService:
             self._profile_locked = True
             return
 
+        if self._active_profile == profile and self._profile_locked:
+            return
+
+        if self._active_profile == profile:
+            self._profile_locked = True
+            return
+
         camera, runtime = load_named_video_profile(profile)
         self.reconfigure(camera, runtime)
+        self._active_profile = profile
         self._profile_locked = True
+        self.warmup(frame)
         logger.info("Perfil de video selecionado automaticamente: %s (%sx%s)", profile, width, height)
 
     def reconfigure(self, camera: CameraConfig, runtime: RuntimeConfig) -> None:
+        same_detector = (
+            self.runtime.backend == runtime.backend
+            and self.runtime.model_path == runtime.model_path
+            and list(self.runtime.model_paths) == list(runtime.model_paths)
+            and self.runtime.confidence == runtime.confidence
+            and self.runtime.iou == runtime.iou
+            and self.runtime.target_label == runtime.target_label
+            and self.runtime.ensemble_iou == runtime.ensemble_iou
+            and self.runtime.ensemble_solo_confidence == runtime.ensemble_solo_confidence
+        )
         self.camera = camera
         self.runtime = runtime
-        self.detector = Detector(runtime)
+        if not same_detector:
+            self.detector = Detector(runtime)
         self.reset()
+
+    def warmup(self, frame: np.ndarray | None = None) -> None:
+        """Roda uma inferencia descartavel para aquecer o detector (YOLO/filtros)."""
+        sample = frame
+        if sample is None:
+            sample = np.zeros((480, 640, 3), dtype=np.uint8)
+        try:
+            self.detector.detect(sample)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Warmup do detector falhou: %s", exc)
 
     def reset(self) -> None:
         self.tracker = CentroidTracker(
             max_distance=self.runtime.match_distance,
             max_missing=self.runtime.max_missing,
+            min_hits=1,
         )
         self.counter = LineCounter(self.camera.line)
         self._last_fps = 0.0
@@ -93,6 +129,8 @@ class EggCounterService:
         self._last_event = None
         self._last_events = []
         self._last_annotated_frame_b64 = None
+        self._last_tracked = []
+        self._annotate_counter = 0
         self._last_roi = self.camera.roi
         self._last_line = self.camera.line
         self._geometry_cache = None
@@ -105,15 +143,21 @@ class EggCounterService:
         started_at = perf_counter()
         result = self._run_pipeline(frame)
         self._update_fps(started_at)
+        self._last_tracked = result.tracked_objects
 
-        debug_frame = self._draw_debug_frame(
-            frame,
-            result.tracked_objects,
-            result.events,
-            preview_scale=_PREVIEW_SCALE,
-        )
-        self._last_annotated_frame_b64 = _encode_frame_b64(debug_frame, quality=_PREVIEW_JPEG_QUALITY)
-        return self._build_frame_result(result.events)
+        # Encode annotated JPEG sparsely — UI uses live video + track overlays
+        self._annotate_counter += 1
+        if self._annotate_counter == 1 or self._annotate_counter % _ANNOTATE_EVERY_N == 0:
+            debug_frame = self._draw_debug_frame(
+                frame,
+                result.tracked_objects,
+                result.events,
+                preview_scale=_PREVIEW_SCALE,
+            )
+            self._last_annotated_frame_b64 = _encode_frame_b64(
+                debug_frame, quality=_PREVIEW_JPEG_QUALITY
+            )
+        return self._build_frame_result(result.events, result.tracked_objects, frame.shape)
 
     def process_stream(self, max_frames: int | None = None, display: bool = True) -> None:
         processed_frames = 0
@@ -177,9 +221,15 @@ class EggCounterService:
         if events:
             self._last_event = events[-1]
         self._last_events = events
+        # Hide boxes after the egg crosses the count line (track stays matched to avoid double-count)
+        visible_tracks = [
+            tracked
+            for tracked in tracked_objects
+            if tracked.track_id not in self.counter.counted_track_ids
+        ]
         self._last_roi = roi
         self._last_line = line
-        return FramePipelineResult(tracked_objects=tracked_objects, events=events)
+        return FramePipelineResult(tracked_objects=visible_tracks, events=events)
 
     def _update_fps(self, started_at: float) -> None:
         elapsed = perf_counter() - started_at
@@ -212,12 +262,41 @@ class EggCounterService:
             "events": [_serialize_event(event) for event in self._last_events],
         }
 
-    def _build_frame_result(self, events: list[CountEvent]) -> dict[str, Any]:
+    def _build_frame_result(
+        self,
+        events: list[CountEvent],
+        tracked_objects: list[TrackedDetection],
+        frame_shape: tuple[int, ...],
+    ) -> dict[str, Any]:
+        height, width = frame_shape[:2]
         return {
             "total_count": self.counter.total_count,
             "active_tracks": self.tracker.active_track_count,
             "fps": round(self._last_fps, 2),
             "annotated_frame_b64": self._last_annotated_frame_b64,
+            "frame_width": width,
+            "frame_height": height,
+            "line": {
+                "x1": self._last_line.x1,
+                "y1": self._last_line.y1,
+                "x2": self._last_line.x2,
+                "y2": self._last_line.y2,
+            },
+            "tracks": [
+                {
+                    "track_id": tracked.track_id,
+                    "label": tracked.label,
+                    "confidence": round(float(tracked.confidence), 3),
+                    "bbox": [
+                        int(tracked.bbox[0]),
+                        int(tracked.bbox[1]),
+                        int(tracked.bbox[2]),
+                        int(tracked.bbox[3]),
+                    ],
+                }
+                for tracked in tracked_objects
+                if tracked.label == "egg"
+            ],
             "events": [_serialize_event(event) for event in events],
         }
 
@@ -265,12 +344,21 @@ class EggCounterService:
                 continue
 
             x1, y1, x2, y2 = tracked.bbox
-            cv2.rectangle(
+            px1 = int(x1 * preview_scale)
+            py1 = int(y1 * preview_scale)
+            px2 = int(x2 * preview_scale)
+            py2 = int(y2 * preview_scale)
+            cv2.rectangle(overlay, (px1, py1), (px2, py2), egg_color, 2)
+            label = f"egg #{tracked.track_id}"
+            cv2.putText(
                 overlay,
-                (int(x1 * preview_scale), int(y1 * preview_scale)),
-                (int(x2 * preview_scale), int(y2 * preview_scale)),
+                label,
+                (px1, max(14, py1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
                 egg_color,
-                2,
+                1,
+                cv2.LINE_AA,
             )
 
         total_text = f"TOTAL: {self.counter.total_count}"

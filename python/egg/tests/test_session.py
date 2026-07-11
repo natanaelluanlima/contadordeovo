@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import pytest
 
 from egg_counter.config import CameraConfig, LineConfig, RuntimeConfig
 from egg_counter.session import ProcessadorSession
@@ -29,12 +28,13 @@ def test_status_returns_last_events_after_frame() -> None:
     assert isinstance(status["events"], list)
 
 
-def test_process_frame_without_start_raises() -> None:
+def test_process_frame_without_start_is_skipped() -> None:
     session = ProcessadorSession(
         camera=CameraConfig(),
         runtime=RuntimeConfig(backend="classic", normalize=False, reference_image=None),
     )
     frame = np.zeros((64, 64, 3), dtype=np.uint8)
 
-    with pytest.raises(RuntimeError, match="sessao ativa"):
-        session.process_frame_bytes(_jpeg_bytes(frame))
+    result = session.process_frame_bytes(_jpeg_bytes(frame))
+    assert result["skipped"] is True
+    assert result["state"] == "idle"

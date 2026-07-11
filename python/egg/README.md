@@ -28,6 +28,7 @@ config/
   camera.video-padrao.yaml # calibração VIDEO PADRÃO.mp4
   reference-*.jpg          # imagens de referência da esteira
 src/egg_counter/           # código principal
+  dataset.py               # extração de frames para dataset YOLO
 ```
 
 ## Instalação
@@ -86,16 +87,31 @@ Processamento local com câmera ou arquivo:
 python -m egg_counter.main --camera-config config/camera.video-testes.yaml --runtime-config config/runtime.video-testes.yaml
 ```
 
-## Modelo YOLO (opcional)
+## Modelo YOLO
 
-O peso padrão `yolov8n.pt` serve para validar o pipeline. Para produção, use modelo treinado:
+O processador integra **Ultralytics YOLOv8** e, apos o treino local, usa:
 
 ```yaml
-# config/runtime.yaml
 backend: ultralytics
 model_path: models/egg_yolov8n.pt
 target_label: egg
 ```
+
+### Dataset — extração de frames (1 por segundo)
+
+```powershell
+python -m egg_counter.dataset --videos-dir videos --output dataset --interval 1
+```
+
+### Treino com as fotos
+
+Gera labels automaticamente (detector classico), monta `dataset/yolo-eggs` e treina:
+
+```powershell
+python -m egg_counter.train --extract-videos --epochs 40 --device cpu
+```
+
+Saida: `models/egg_yolov8n.pt`
 
 ## Ordem na stack
 

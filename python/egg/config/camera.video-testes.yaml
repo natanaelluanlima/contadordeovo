@@ -4,26 +4,22 @@ width: 848
 height: 478
 fps: 60
 show_window: true
-crop_roi: true
+crop_roi: false
 
-# Recorte da esteira (ignora piso cinza a esquerda)
+# ROI amplo da esteira (sem apertar o enquadramento)
 roi:
-  x: 95
-  y: 6
-  width: 743
-  height: 468
+  x: 40
+  y: 0
+  width: 800
+  height: 478
 
-# Linha horizontal de contagem no centro da esteira
+# Counting line in the upper third — more time to track the egg before it crosses
 line:
-  x1: 105
-  y1: 240
-  x2: 828
-  y2: 240
+  x1: 60
+  y1: 130
+  x2: 830
+  y2: 130
   direction: bottom_to_top
 
-# Faixa central da esteira (furos/emenda geram falso positivo)
-exclude_zones:
-  - x: 355
-    y: 0
-    width: 130
-    height: 478
+# No center exclude on single-belt videos (was dropping valid eggs)
+exclude_zones: []

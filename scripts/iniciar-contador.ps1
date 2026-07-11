@@ -101,10 +101,15 @@ $services = @()
 $services += Start-BackgroundService -Name "processador" -WorkingDirectory $pythonEgg -Command "python -m egg_counter.processador_main"
 Start-Sleep -Seconds 2
 
-$services += Start-BackgroundService -Name "bff" -WorkingDirectory $javaBff -Command ".\mvnw.cmd quarkus:dev" -EnvVars @{ JAVA_HOME = $javaHome }
+# debug=false evita conflito JDWP (porta 5005) entre BFF e gateway no quarkus:dev
+$quarkusEnv = @{
+    JAVA_HOME = $javaHome
+    QUARKUS_ANALYTICS_DISABLED = "true"
+}
+$services += Start-BackgroundService -Name "bff" -WorkingDirectory $javaBff -Command ".\mvnw.cmd quarkus:dev `"-Ddebug=false`"" -EnvVars $quarkusEnv
 Start-Sleep -Seconds 3
 
-$services += Start-BackgroundService -Name "gateway" -WorkingDirectory $javaGateway -Command ".\mvnw.cmd quarkus:dev" -EnvVars @{ JAVA_HOME = $javaHome }
+$services += Start-BackgroundService -Name "gateway" -WorkingDirectory $javaGateway -Command ".\mvnw.cmd quarkus:dev `"-Ddebug=false`"" -EnvVars $quarkusEnv
 Start-Sleep -Seconds 3
 
 $services += Start-BackgroundService -Name "site" -WorkingDirectory $reactEgg -Command "npm run dev"

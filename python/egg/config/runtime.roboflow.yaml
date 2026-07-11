@@ -1,0 +1,17 @@
+# Backend Roboflow RAPID (API na nuvem)
+# Credenciais: python/egg/.env (ROBOFLOW_API_KEY, etc.)
+backend: roboflow
+model_path: models/egg_yolov8n.pt
+confidence: 0.35
+iou: 0.40
+target_label: egg
+reference_image: config/reference-video-testes.jpg
+diff_threshold: 55
+match_distance: 110.0
+max_missing: 22
+normalize: false
+api_host: 0.0.0.0
+api_port: 9002
+roboflow_workspace: natanael-lima-s-workspace
+roboflow_workflow_id: find-egg-kl34i
+roboflow_api_url: https://detect.roboflow.com

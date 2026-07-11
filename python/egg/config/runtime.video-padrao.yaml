@@ -1,13 +1,18 @@
-# Runtime calibrado para VIDEO PADRAO.mp4 (esteira dupla, ovos marrons)
-backend: classic
-model_path: yolov8n.pt
-confidence: 0.35
+# Runtime VIDEO PADRAO — ensemble Colab v1+v2
+backend: ensemble
+model_path: models/best_v2.pt
+model_paths:
+  - models/best_v1.pt
+  - models/best_v2.pt
+confidence: 0.30
 iou: 0.45
+ensemble_iou: 0.45
+ensemble_solo_confidence: 0.55
 target_label: egg
 reference_image: config/reference-video-padrao.jpg
 diff_threshold: 55
-match_distance: 90.0
-max_missing: 15
+match_distance: 140.0
+max_missing: 45
 normalize: false
 api_host: 0.0.0.0
 api_port: 9002

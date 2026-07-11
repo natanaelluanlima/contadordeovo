@@ -12,16 +12,17 @@ roi:
   width: 944
   height: 528
 
+# Counting line in the upper third — more time to track before crossing
 line:
   x1: 10
-  y1: 270
+  y1: 150
   x2: 950
-  y2: 270
+  y2: 150
   direction: bottom_to_top
 
-# Divisor central + faixa da emenda (ovos passam pelas pistas laterais)
+# Divisor central (ovos passam pelas pistas laterais)
 exclude_zones:
-  - x: 330
+  - x: 400
     y: 0
-    width: 300
+    width: 160
     height: 540

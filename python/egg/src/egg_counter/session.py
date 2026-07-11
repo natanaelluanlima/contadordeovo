@@ -32,6 +32,8 @@ class ProcessadorSession:
             payload = body or {}
             self._mode = str(payload.get("mode", "browser_camera"))
             self._service.reset()
+            # Reavalia perfil no proximo frame (tamanho pode mudar), mas reaproveita
+            # o Detector se o perfil/modelo for o mesmo — evita atraso no 1o frame.
             self._service._profile_locked = False
             self._state = "running"
             logger.info("Sessao iniciada no modo %s", self._mode)
@@ -55,12 +57,16 @@ class ProcessadorSession:
     def _process_frame(self, frame: np.ndarray) -> dict[str, Any]:
         with self._lock:
             if self._state != "running":
-                raise RuntimeError("Nenhuma sessao ativa. Chame /v1/session/start antes de enviar frames.")
+                # Evita HTTP 409 em corridas (frame apos stop / antes do start).
+                status = self._build_status()
+                status["skipped"] = True
+                return status
 
             result = self._service.process_frame(frame)
             return {
                 "state": self._state,
                 "mode": self._mode,
+                "skipped": False,
                 **result,
             }
 
@@ -78,6 +84,8 @@ class ProcessadorSession:
 
 
 def _decode_frame(frame_bytes: bytes) -> np.ndarray:
+    if not frame_bytes:
+        raise ValueError("Frame vazio.")
     buffer = np.frombuffer(frame_bytes, dtype=np.uint8)
     frame = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
     if frame is None:

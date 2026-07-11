@@ -104,7 +104,8 @@ def scaled_geometry(
 
 def detect_center_divider_zone(frame: np.ndarray) -> RoiConfig | None:
     height, width = frame.shape[:2]
-    if width < 720:
+    if width < 900:
+        # So aplica em esteira dupla larga (ex.: VIDEO PADRAO 960x540)
         return None
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -121,10 +122,10 @@ def detect_center_divider_zone(frame: np.ndarray) -> RoiConfig | None:
 
     belt_brightness = max(float(left_band.mean()), float(right_band.mean()))
     center_brightness = float(center_band.mean())
-    if belt_brightness - center_brightness < 35:
+    if belt_brightness - center_brightness < 45:
         return None
 
-    exclude_width = max(band_width * 3, width // 4)
+    exclude_width = max(band_width * 2, width // 6)
     exclude_x = max(0, center_x - exclude_width // 2)
     return RoiConfig(x=exclude_x, y=0, width=min(exclude_width, width - exclude_x), height=height)
 

@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Clock,
   Egg,
+  FileText,
   FileVideo,
   Layers,
   Menu,
@@ -16,6 +17,7 @@ import {
   PlayCircle,
   Power,
   RefreshCw,
+  RotateCcw,
   ScanEye,
   Square,
   Video,
@@ -28,7 +30,9 @@ import {
   iniciarContagem,
   pararContagem,
   type ContagemStatus,
+  type ContagemTrack,
 } from "@/lib/gateway/contagem-api";
+import { generateContagemReportPdf } from "@/lib/reports/contagem-report-pdf";
 
 const DAILY_STORAGE_KEY = "contador-ovos-daily-total";
 const GRANJA_STORAGE_KEY = "contador-ovos-granja";
@@ -74,10 +78,34 @@ function writeStoredLote(digits: string, siglas: string) {
   localStorage.setItem(LOTE_STORAGE_KEY, JSON.stringify({ digits, siglas }));
 }
 
-const MAX_CAPTURE_WIDTH = 848;
-const UPLOAD_JPEG_QUALITY = 0.7;
-const MIN_FRAME_INTERVAL_MS = 90;
-const VIDEO_SAMPLE_SECONDS = 0.08;
+const MAX_CAPTURE_WIDTH = 960;
+const UPLOAD_JPEG_QUALITY = 0.68;
+const MIN_FRAME_INTERVAL_MS = 45;
+const VIDEO_SAMPLE_SECONDS = 0.033;
+const BOX_LERP_MS = 35;
+
+type SmoothTrack = ContagemTrack & {
+  from: [number, number, number, number];
+  to: [number, number, number, number];
+  updatedAt: number;
+};
+
+function lerp(a: number, b: number, t: number) {
+  return a + (b - a) * t;
+}
+
+function lerpBbox(
+  from: [number, number, number, number],
+  to: [number, number, number, number],
+  t: number
+): [number, number, number, number] {
+  return [
+    lerp(from[0], to[0], t),
+    lerp(from[1], to[1], t),
+    lerp(from[2], to[2], t),
+    lerp(from[3], to[3], t),
+  ];
+}
 
 function captureFrameBase64(video: HTMLVideoElement, canvas: HTMLCanvasElement): string | null {
   const width = video.videoWidth;
@@ -97,6 +125,38 @@ function captureFrameBase64(video: HTMLVideoElement, canvas: HTMLCanvasElement):
   const dataUrl = canvas.toDataURL("image/jpeg", UPLOAD_JPEG_QUALITY);
   const comma = dataUrl.indexOf(",");
   return comma >= 0 ? dataUrl.slice(comma + 1) : null;
+}
+
+function seekVideoTo(video: HTMLVideoElement, timeSeconds: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!Number.isFinite(video.duration) && video.readyState < 1) {
+      reject(new Error("Vídeo ainda não está pronto para seek."));
+      return;
+    }
+
+    const target = Math.max(0, timeSeconds);
+    if (Math.abs(video.currentTime - target) < 0.02 && video.readyState >= 2) {
+      resolve();
+      return;
+    }
+
+    const onSeeked = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("Falha ao posicionar o vídeo."));
+    };
+    const cleanup = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+    };
+
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("error", onError);
+    video.currentTime = target;
+  });
 }
 
 function getLocalDateKey(date = new Date()) {
@@ -190,6 +250,11 @@ function VideoDurationOverlay({
 }
 
 function DateTimeCard({ dateTime }: { dateTime: Date }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const date = dateTime.toLocaleDateString("pt-BR", {
     day: "2-digit",
     month: "2-digit",
@@ -207,8 +272,8 @@ function DateTimeCard({ dateTime }: { dateTime: Date }) {
         <Clock className="h-3 w-3" strokeWidth={2} />
         Tempo real
       </span>
-      <span className="datetime-chip-date">{date}</span>
-      <span className="datetime-chip-time">{time}</span>
+      <span className="datetime-chip-date">{mounted ? date : "--/--/----"}</span>
+      <span className="datetime-chip-time">{mounted ? time : "--:--:--"}</span>
     </div>
   );
 }
@@ -241,7 +306,9 @@ function ControlButton({
         ? "border-rose-400/60 bg-rose-500/20 text-rose-100 hover:bg-rose-500/35 hover:border-rose-300"
         : tone === "warning"
           ? "border-amber-400/60 bg-amber-500/20 text-amber-100 hover:bg-amber-500/35 hover:border-amber-300"
-          : "border-slate-400/50 bg-slate-500/20 text-slate-100 hover:bg-slate-500/35";
+          : tone === "primary"
+            ? "border-sky-400/60 bg-sky-500/20 text-sky-100 hover:bg-sky-500/35 hover:border-sky-300"
+            : "border-slate-400/50 bg-slate-500/20 text-slate-100 hover:bg-slate-500/35";
 
   return (
     <button
@@ -334,6 +401,7 @@ function isLikelyBlankFeed(ctx: CanvasRenderingContext2D, width: number, height:
 export function ContagemDemoScreen() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const processorCanvasRef = useRef<HTMLCanvasElement>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileUrlRef = useRef<string | null>(null);
@@ -341,18 +409,36 @@ export function ContagemDemoScreen() {
   const previewLoopRef = useRef<number | null>(null);
   const countingLoopActiveRef = useRef(false);
   const frameProcessingRef = useRef(false);
+  const pendingFrameRef = useRef<{ imageB64: string; videoTime: number } | null>(null);
   const lastFrameSentAtRef = useRef(0);
   const lastProcessedVideoTimeRef = useRef(0);
   const videoFileNameRef = useRef<string | null>(null);
-  const previewImgRef = useRef<HTMLImageElement>(null);
+  const overlayRef = useRef<{
+    tracks: SmoothTrack[];
+    line: ContagemStatus["line"] | null;
+    frameWidth: number;
+    frameHeight: number;
+    totalCount: number;
+  }>({
+    tracks: [],
+    line: null,
+    frameWidth: 0,
+    frameHeight: 0,
+    totalCount: 0,
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeDeviceIdRef = useRef<string | null>(null);
+  const sessionStartedAtRef = useRef<Date | null>(null);
+  const sessionPreparedRef = useRef(false);
 
   const [status, setStatus] = useState<ContagemStatus | null>(null);
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [preparingPipeline, setPreparingPipeline] = useState(false);
+  const [pipelineReady, setPipelineReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
+  const [hasProcessorOverlay, setHasProcessorOverlay] = useState(false);
+  const [reportLoading, setReportLoading] = useState(false);
   const [videoFileName, setVideoFileName] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
@@ -368,7 +454,7 @@ export function ContagemDemoScreen() {
   const [now, setNow] = useState(() => new Date());
   const [videoDuration, setVideoDuration] = useState(0);
   const [videoCurrentTime, setVideoCurrentTime] = useState(0);
-  const [selectedGranja, setSelectedGranja] = useState(GRANJA_OPTIONS[0]);
+  const [selectedGranja, setSelectedGranja] = useState<string>(GRANJA_OPTIONS[0]);
   const [loteDigits, setLoteDigits] = useState("0000");
   const [loteSiglas, setLoteSiglas] = useState("AA");
   const menuRef = useRef<HTMLDivElement>(null);
@@ -377,14 +463,38 @@ export function ContagemDemoScreen() {
     videoFileNameRef.current = videoFileName;
   }, [videoFileName]);
 
-  const updateProcessorPreview = useCallback((annotatedB64: string) => {
-    const src = `data:image/jpeg;base64,${annotatedB64}`;
-    const img = previewImgRef.current;
-    if (img) {
-      img.src = src;
-      return;
-    }
-    setPreview(src);
+  const updateProcessorOverlay = useCallback((data: ContagemStatus) => {
+    const now = performance.now();
+    const previous = new Map(overlayRef.current.tracks.map((track) => [track.track_id, track]));
+    const nextTracks: SmoothTrack[] = (data.tracks ?? []).map((track) => {
+      const bbox = track.bbox;
+      const existing = previous.get(track.track_id);
+      if (!existing) {
+        return {
+          ...track,
+          from: bbox,
+          to: bbox,
+          updatedAt: now,
+        };
+      }
+      const progress = Math.min(1, (now - existing.updatedAt) / BOX_LERP_MS);
+      const current = lerpBbox(existing.from, existing.to, progress);
+      return {
+        ...track,
+        from: current,
+        to: bbox,
+        updatedAt: now,
+      };
+    });
+
+    overlayRef.current = {
+      tracks: nextTracks,
+      line: data.line ?? null,
+      frameWidth: data.frame_width ?? 0,
+      frameHeight: data.frame_height ?? 0,
+      totalCount: data.total_count ?? 0,
+    };
+    setHasProcessorOverlay(true);
   }, []);
 
   const assertCameraSupported = useCallback(() => {
@@ -528,17 +638,25 @@ export function ContagemDemoScreen() {
           { deviceId: { exact: deviceId } },
           {
             deviceId: { exact: deviceId },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
+            width: { ideal: 960 },
+            height: { ideal: 540 },
           },
           {
             deviceId: { exact: deviceId },
-            width: { ideal: 640 },
-            height: { ideal: 480 },
+            width: { ideal: 848 },
+            height: { ideal: 478 },
+          },
+          {
+            deviceId: { exact: deviceId },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
           },
           { deviceId: { ideal: deviceId } },
         ]
-      : [{ width: { ideal: 1280 }, height: { ideal: 720 } }];
+      : [
+          { width: { ideal: 960 }, height: { ideal: 540 } },
+          { width: { ideal: 848 }, height: { ideal: 478 } },
+        ];
 
     let lastMismatchLabel = "";
     let lastError: unknown;
@@ -615,10 +733,21 @@ export function ContagemDemoScreen() {
   }, []);
 
   const clearPreviewSurfaces = useCallback(() => {
-    setPreview(null);
+    setHasProcessorOverlay(false);
     setSourceWarning(null);
+    overlayRef.current = {
+      tracks: [],
+      line: null,
+      frameWidth: 0,
+      frameHeight: 0,
+      totalCount: 0,
+    };
 
-    for (const canvas of [previewCanvasRef.current, captureCanvasRef.current]) {
+    for (const canvas of [
+      previewCanvasRef.current,
+      processorCanvasRef.current,
+      captureCanvasRef.current,
+    ]) {
       if (!canvas) continue;
       const ctx = canvas.getContext("2d");
       if (!ctx) continue;
@@ -629,6 +758,7 @@ export function ContagemDemoScreen() {
   const stopCountingLoop = useCallback(() => {
     countingLoopActiveRef.current = false;
     frameProcessingRef.current = false;
+    pendingFrameRef.current = null;
     if (loopRef.current !== null) {
       cancelAnimationFrame(loopRef.current);
       loopRef.current = null;
@@ -673,26 +803,81 @@ export function ContagemDemoScreen() {
     setVideoCurrentTime(0);
     setCameraReady(false);
     setStreamInfo(null);
+    setPipelineReady(false);
+    setPreparingPipeline(false);
+    sessionPreparedRef.current = false;
     clearPreviewSurfaces();
   }, [clearPreviewSurfaces, stopFrameLoops]);
 
   const drawLocalPreview = useCallback(() => {
     const video = videoRef.current;
-    const canvas = previewCanvasRef.current;
-    if (!video || !canvas || video.readyState < 2) return false;
+    const liveCanvas = previewCanvasRef.current;
+    const processorCanvas = processorCanvasRef.current;
+    if (!video || !liveCanvas || video.readyState < 2) return false;
 
     const width = video.videoWidth;
     const height = video.videoHeight;
     if (!width || !height) return false;
 
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
-    }
+    const drawVideo = (canvas: HTMLCanvasElement) => {
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(video, 0, 0, width, height);
+      return ctx;
+    };
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return false;
-    ctx.drawImage(video, 0, 0, width, height);
+    if (!drawVideo(liveCanvas)) return false;
+
+    if (processorCanvas) {
+      const ctx = drawVideo(processorCanvas);
+      if (ctx) {
+        const overlay = overlayRef.current;
+        const sx = overlay.frameWidth > 0 ? width / overlay.frameWidth : 1;
+        const sy = overlay.frameHeight > 0 ? height / overlay.frameHeight : 1;
+
+        if (overlay.line) {
+          ctx.strokeStyle = "#ff8000";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(overlay.line.x1 * sx, overlay.line.y1 * sy);
+          ctx.lineTo(overlay.line.x2 * sx, overlay.line.y2 * sy);
+          ctx.stroke();
+        }
+
+        for (const track of overlay.tracks) {
+          const progress = Math.min(1, (performance.now() - track.updatedAt) / BOX_LERP_MS);
+          const [x1, y1, x2, y2] = lerpBbox(track.from, track.to, progress);
+          const px1 = x1 * sx;
+          const py1 = y1 * sy;
+          const px2 = x2 * sx;
+          const py2 = y2 * sy;
+          ctx.strokeStyle = "#ef4444";
+          ctx.lineWidth = 2.5;
+          ctx.strokeRect(px1, py1, px2 - px1, py2 - py1);
+          ctx.fillStyle = "#ef4444";
+          ctx.font = "bold 13px sans-serif";
+          ctx.fillText(`egg #${track.track_id}`, px1, Math.max(14, py1 - 6));
+        }
+
+        if (overlay.totalCount > 0 || overlay.tracks.length > 0) {
+          const label = `TOTAL: ${overlay.totalCount}`;
+          ctx.font = "bold 20px sans-serif";
+          ctx.fillStyle = "rgba(15, 23, 42, 0.7)";
+          const metrics = ctx.measureText(label);
+          const padX = 10;
+          const padY = 8;
+          const boxW = metrics.width + padX * 2;
+          const boxH = 28 + padY;
+          ctx.fillRect(12, 12, boxW, boxH);
+          ctx.fillStyle = "#f8fafc";
+          ctx.fillText(label, 12 + padX, 12 + boxH - padY - 2);
+        }
+      }
+    }
     return true;
   }, []);
 
@@ -707,6 +892,8 @@ export function ContagemDemoScreen() {
     setRunning(false);
     setPaused(false);
     setPreviewOnly(false);
+    setPipelineReady(false);
+    sessionPreparedRef.current = false;
     try {
       const data = await pararContagem();
       setStatus(data);
@@ -725,6 +912,92 @@ export function ContagemDemoScreen() {
   }, [drawLocalPreview]);
 
   const startFrameLoop = useCallback(() => {
+    let sessionRecovering = false;
+
+    const sendFrame = async (imageB64: string, capturedVideoTime: number) => {
+      frameProcessingRef.current = true;
+      const video = videoRef.current;
+      const isUploadedVideo = Boolean(videoFileNameRef.current);
+      const startedAt = performance.now();
+
+      // Com ensemble (2 modelos), o processamento e mais lento: segura o video.
+      if (isUploadedVideo && video && !video.paused && !video.ended) {
+        video.playbackRate = 0.45;
+      }
+
+      try {
+        const data = await enviarFrameBase64(imageB64);
+        if (data.skipped) {
+          // Sessao idle — tenta recuperar uma vez sem poluir a UI com 409.
+          if (countingLoopActiveRef.current && !sessionRecovering) {
+            sessionRecovering = true;
+            try {
+              await iniciarContagem(
+                videoFileNameRef.current ? "uploaded_video" : "browser_camera"
+              );
+              const retry = await enviarFrameBase64(imageB64);
+              if (!retry.skipped) {
+                lastFrameSentAtRef.current = performance.now();
+                lastProcessedVideoTimeRef.current = capturedVideoTime;
+                setStatus(retry);
+                updateProcessorOverlay(retry);
+              }
+            } catch {
+              /* ignore recover race */
+            } finally {
+              sessionRecovering = false;
+            }
+          }
+          return;
+        }
+
+        lastFrameSentAtRef.current = performance.now();
+        lastProcessedVideoTimeRef.current = capturedVideoTime;
+        setStatus(data);
+        updateProcessorOverlay(data);
+
+        if (isUploadedVideo && video) {
+          const elapsed = performance.now() - startedAt;
+          const lag = video.currentTime - lastProcessedVideoTimeRef.current;
+          // Sincroniza taxa de play com tempo real do processador
+          const targetRate = Math.min(1, Math.max(0.35, 280 / Math.max(180, elapsed)));
+          video.playbackRate = lag > 0.35 ? Math.min(targetRate, 0.5) : targetRate;
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Falha ao enviar frame";
+        const isConflict = /409|sessao|sessão|skipped/i.test(message);
+        if (isConflict) {
+          if (countingLoopActiveRef.current && !sessionRecovering) {
+            sessionRecovering = true;
+            try {
+              await iniciarContagem(
+                videoFileNameRef.current ? "uploaded_video" : "browser_camera"
+              );
+            } catch {
+              /* ignore */
+            } finally {
+              sessionRecovering = false;
+            }
+          }
+          // Nao mostra erro vermelho de 409 — e corrida de sessao, nao falha fatal.
+          return;
+        }
+        setError(message);
+      } finally {
+        frameProcessingRef.current = false;
+        const pending = pendingFrameRef.current;
+        pendingFrameRef.current = null;
+        if (pending && countingLoopActiveRef.current) {
+          void sendFrame(pending.imageB64, pending.videoTime);
+        } else if (isUploadedVideo && video && countingLoopActiveRef.current && !video.ended) {
+          // Restaura ritmo quando a fila esvazia
+          if (video.playbackRate < 0.85) {
+            video.playbackRate = Math.min(1, video.playbackRate + 0.15);
+          }
+        }
+      }
+    };
+
     const runCountingLoop = async () => {
       if (!countingLoopActiveRef.current) return;
 
@@ -740,13 +1013,17 @@ export function ContagemDemoScreen() {
         return;
       }
 
+      const now = performance.now();
+      const isUploadedVideo = Boolean(videoFileNameRef.current);
+
+      // Enquanto processa, nao captura novos frames do video — evita backlog/409.
       if (frameProcessingRef.current) {
+        if (isUploadedVideo && !video.paused && !video.ended) {
+          video.playbackRate = Math.min(video.playbackRate, 0.4);
+        }
         loopRef.current = requestAnimationFrame(() => void runCountingLoop());
         return;
       }
-
-      const now = performance.now();
-      const isUploadedVideo = Boolean(videoFileNameRef.current);
 
       if (isUploadedVideo) {
         const videoDelta = video.currentTime - lastProcessedVideoTimeRef.current;
@@ -766,37 +1043,19 @@ export function ContagemDemoScreen() {
         return;
       }
 
-      frameProcessingRef.current = true;
-      try {
-        const data = await enviarFrameBase64(imageB64);
-        lastFrameSentAtRef.current = performance.now();
-        lastProcessedVideoTimeRef.current = capturedVideoTime;
-        setStatus(data);
-
-        if (data.annotated_frame_b64) {
-          updateProcessorPreview(data.annotated_frame_b64);
-        }
-
-        if (isUploadedVideo) {
-          const lag = video.currentTime - lastProcessedVideoTimeRef.current;
-          video.playbackRate = lag > 0.2 ? Math.max(0.45, 1 - lag) : 1;
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Falha ao enviar frame");
-      } finally {
-        frameProcessingRef.current = false;
-        if (countingLoopActiveRef.current) {
-          loopRef.current = requestAnimationFrame(() => void runCountingLoop());
-        }
+      await sendFrame(imageB64, capturedVideoTime);
+      if (countingLoopActiveRef.current) {
+        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
       }
     };
 
     countingLoopActiveRef.current = true;
     frameProcessingRef.current = false;
+    pendingFrameRef.current = null;
     lastFrameSentAtRef.current = 0;
     lastProcessedVideoTimeRef.current = 0;
     loopRef.current = requestAnimationFrame(() => void runCountingLoop());
-  }, [handleVideoEnded, updateProcessorPreview]);
+  }, [handleVideoEnded, updateProcessorOverlay]);
 
   const connectCamera = useCallback(
     async (deviceId: string, cameraLabel: string) => {
@@ -929,9 +1188,11 @@ export function ContagemDemoScreen() {
       void loadCameras();
 
       await iniciarContagem("browser_camera");
+      sessionStartedAtRef.current = new Date();
       setPreviewOnly(false);
       setPaused(false);
       setRunning(true);
+      startPreviewLoop();
       startFrameLoop();
     } catch (e) {
       streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -969,13 +1230,79 @@ export function ContagemDemoScreen() {
     loadCameras,
     resolveDeviceId,
     startFrameLoop,
+    startPreviewLoop,
     stopPlayback,
   ]);
+
+  const prepareVideoPipeline = useCallback(async () => {
+    const video = videoRef.current;
+    const canvas = captureCanvasRef.current;
+    if (!video || !canvas) {
+      throw new Error("Elemento de vídeo indisponível para preparar a contagem.");
+    }
+
+    setPreparingPipeline(true);
+    setPipelineReady(false);
+    sessionPreparedRef.current = false;
+    setError(null);
+
+    try {
+      stopCountingLoop();
+      video.pause();
+      await seekVideoTo(video, 0);
+      drawLocalPreview();
+
+      await iniciarContagem("uploaded_video");
+      sessionStartedAtRef.current = new Date();
+
+      const imageB64 = captureFrameBase64(video, canvas);
+      if (!imageB64) {
+        throw new Error("Não foi possível capturar o frame inicial do vídeo.");
+      }
+
+      const data = await enviarFrameBase64(imageB64);
+      setStatus(data);
+      updateProcessorOverlay(data);
+
+      if (!data.line) {
+        throw new Error("Processador não retornou a linha de contagem.");
+      }
+
+      lastProcessedVideoTimeRef.current = video.currentTime;
+      lastFrameSentAtRef.current = performance.now();
+      sessionPreparedRef.current = true;
+      setPipelineReady(true);
+      drawLocalPreview();
+      return data;
+    } catch (e) {
+      sessionPreparedRef.current = false;
+      setPipelineReady(false);
+      try {
+        await pararContagem();
+      } catch {
+        /* ignore */
+      }
+      throw e;
+    } finally {
+      setPreparingPipeline(false);
+    }
+  }, [drawLocalPreview, stopCountingLoop, updateProcessorOverlay]);
 
   const startVideoFile = useCallback(
     async (file: File) => {
       setError(null);
       setLoading(true);
+      setPipelineReady(false);
+
+      const hadSession = sessionPreparedRef.current || running || paused;
+      sessionPreparedRef.current = false;
+      if (hadSession) {
+        try {
+          await pararContagem();
+        } catch {
+          /* ignore */
+        }
+      }
       stopPlayback();
 
       try {
@@ -1013,28 +1340,56 @@ export function ContagemDemoScreen() {
           video.addEventListener("error", onError);
         });
 
-        video.currentTime = 0;
         video.pause();
+        await seekVideoTo(video, 0);
         setCameraReady(true);
-        drawLocalPreview();
         setPreviewOnly(true);
         setRunning(false);
         setPaused(false);
+        drawLocalPreview();
+        startPreviewLoop();
+
+        setLoading(false);
+        await prepareVideoPipeline();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Falha ao carregar o vídeo");
+        setPipelineReady(false);
+        sessionPreparedRef.current = false;
         stopPlayback();
       } finally {
         setLoading(false);
+        setPreparingPipeline(false);
       }
     },
-    [drawLocalPreview, handleVideoEnded, stopPlayback]
+    [
+      drawLocalPreview,
+      handleVideoEnded,
+      paused,
+      prepareVideoPipeline,
+      running,
+      startPreviewLoop,
+      stopPlayback,
+    ]
   );
+
+  const clearOverlayTracks = useCallback(() => {
+    overlayRef.current = {
+      ...overlayRef.current,
+      tracks: [],
+      totalCount: overlayRef.current.totalCount,
+    };
+  }, []);
 
   const handleStop = useCallback(async () => {
     const wasCounting = running;
+    const hadPreparedSession = sessionPreparedRef.current || pipelineReady;
+    clearOverlayTracks();
+    setHasProcessorOverlay(false);
+    setPipelineReady(false);
+    sessionPreparedRef.current = false;
     stopPlayback();
     setPaused(false);
-    if (!wasCounting) return;
+    if (!wasCounting && !hadPreparedSession) return;
 
     try {
       const data = await pararContagem();
@@ -1043,13 +1398,14 @@ export function ContagemDemoScreen() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Falha ao parar");
     }
-  }, [accumulateSessionCount, running, stopPlayback]);
+  }, [accumulateSessionCount, clearOverlayTracks, pipelineReady, running, stopPlayback]);
 
   const handlePause = useCallback(() => {
     stopCountingLoop();
     videoRef.current?.pause();
+    clearOverlayTracks();
     setPaused(true);
-  }, [stopCountingLoop]);
+  }, [clearOverlayTracks, stopCountingLoop]);
 
   const handleResume = useCallback(async () => {
     const video = videoRef.current;
@@ -1060,7 +1416,9 @@ export function ContagemDemoScreen() {
 
     try {
       if (!running && previewOnly && videoFileName) {
-        await iniciarContagem("uploaded_video");
+        if (!sessionPreparedRef.current || !pipelineReady) {
+          await prepareVideoPipeline();
+        }
         await video.play();
         setPreviewOnly(false);
         setPaused(false);
@@ -1073,6 +1431,7 @@ export function ContagemDemoScreen() {
       if (running && paused) {
         await video.play();
         setPaused(false);
+        startPreviewLoop();
         startFrameLoop();
       }
     } catch (e) {
@@ -1086,7 +1445,117 @@ export function ContagemDemoScreen() {
     } finally {
       setLoading(false);
     }
-  }, [paused, previewOnly, running, startFrameLoop, startPreviewLoop, videoFileName]);
+  }, [
+    paused,
+    pipelineReady,
+    prepareVideoPipeline,
+    previewOnly,
+    running,
+    startFrameLoop,
+    startPreviewLoop,
+    videoFileName,
+  ]);
+
+  const handleRestartVideo = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || !videoFileName) return;
+
+    setError(null);
+    setLoading(true);
+    stopCountingLoop();
+
+    try {
+      if (running || paused || sessionPreparedRef.current) {
+        try {
+          const data = await pararContagem();
+          setStatus(data);
+          if (running || paused) {
+            accumulateSessionCount(data.total_count);
+          }
+        } catch {
+          /* sessao pode ja estar encerrada */
+        }
+      }
+
+      overlayRef.current = {
+        tracks: [],
+        line: null,
+        frameWidth: 0,
+        frameHeight: 0,
+        totalCount: 0,
+      };
+      setHasProcessorOverlay(false);
+      setPipelineReady(false);
+      sessionPreparedRef.current = false;
+
+      video.onended = () => {
+        void handleVideoEnded();
+      };
+      video.playbackRate = 1;
+      video.pause();
+      setPreviewOnly(true);
+      setRunning(false);
+      setPaused(false);
+      startPreviewLoop();
+
+      setLoading(false);
+      await prepareVideoPipeline();
+
+      await video.play();
+      setPreviewOnly(false);
+      setPaused(false);
+      setRunning(true);
+      startPreviewLoop();
+      startFrameLoop();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao reiniciar o video");
+      setRunning(false);
+      setPaused(false);
+      setPreviewOnly(true);
+      setPipelineReady(false);
+      sessionPreparedRef.current = false;
+      video.pause();
+      video.currentTime = 0;
+      drawLocalPreview();
+    } finally {
+      setLoading(false);
+      setPreparingPipeline(false);
+    }
+  }, [
+    accumulateSessionCount,
+    drawLocalPreview,
+    handleVideoEnded,
+    paused,
+    prepareVideoPipeline,
+    running,
+    startFrameLoop,
+    startPreviewLoop,
+    stopCountingLoop,
+    videoFileName,
+  ]);
+
+  const handleGenerateReport = useCallback(async () => {
+    setError(null);
+    setReportLoading(true);
+    try {
+      const endedAt = new Date();
+      const startedAt = sessionStartedAtRef.current ?? endedAt;
+      const lote = `${loteDigits}-${loteSiglas}`;
+      const sessionTotal = status?.total_count ?? 0;
+      await generateContagemReportPdf({
+        granja: selectedGranja,
+        lote,
+        totalOvos: sessionTotal,
+        startedAt,
+        endedAt,
+        videoName: videoFileName,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao gerar o relatorio PDF");
+    } finally {
+      setReportLoading(false);
+    }
+  }, [loteDigits, loteSiglas, selectedGranja, status?.total_count, videoFileName]);
 
   const selectedCameraLabel =
     cameras.find((camera) => camera.deviceId === selectedCameraId)?.label ?? "—";
@@ -1097,7 +1566,11 @@ export function ContagemDemoScreen() {
   const activeSessionCount = running || paused ? totalOvos : 0;
   const dailyTotal = completedDailyTotal + activeSessionCount;
   const awaitingVideoStart = Boolean(previewOnly && videoFileName && cameraReady && !running);
-  const canResumeCounting = (running && paused) || awaitingVideoStart;
+  const canResumeCounting =
+    (running && paused) || (awaitingVideoStart && pipelineReady && !preparingPipeline);
+  const canRestartVideo = Boolean(
+    videoFileName && cameraReady && !loading && !preparingPipeline
+  );
 
   useEffect(() => () => stopPlayback(), [stopPlayback]);
 
@@ -1338,7 +1811,11 @@ export function ContagemDemoScreen() {
                 )}
                 {awaitingVideoStart && (
                   <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-slate-900/80 px-2 py-1 text-center text-[11px] text-slate-100">
-                    Vídeo carregado. Use o botão play para iniciar.
+                    {preparingPipeline
+                      ? "Preparando linha e detecção… aguarde."
+                      : pipelineReady
+                        ? "Pronto. Clique em Iniciar contagem."
+                        : "Preparação pendente. Aguarde ou recarregue o vídeo."}
                   </div>
                 )}
               </div>
@@ -1348,16 +1825,9 @@ export function ContagemDemoScreen() {
                 Processador
               </p>
               <div className="relative min-h-0 flex-1 bg-slate-950">
-                {preview ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    ref={previewImgRef}
-                    src={preview}
-                    alt="Frame processado"
-                    className="h-full w-full object-contain"
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center bg-[var(--rovah-bg)] text-center text-xs text-[var(--rovah-text-muted)]">
+                <canvas ref={processorCanvasRef} className="h-full w-full object-contain" />
+                {!hasProcessorOverlay && !running && !previewOnly && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--rovah-bg)] text-center text-xs text-[var(--rovah-text-muted)]">
                     Preview do processador
                   </div>
                 )}
@@ -1374,21 +1844,30 @@ export function ContagemDemoScreen() {
                 icon={<Pause className="h-5 w-5" strokeWidth={1.75} />}
                 label="Pausar contagem"
                 tone="warning"
-                disabled={!running || paused || previewOnly || loading}
+                disabled={!running || paused || previewOnly || loading || preparingPipeline}
                 onClick={handlePause}
               />
               <ControlButton
                 icon={<Play className="h-5 w-5" strokeWidth={1.75} />}
                 label={awaitingVideoStart ? "Iniciar contagem" : "Retomar contagem"}
                 tone="success"
-                disabled={!canResumeCounting || loading}
+                disabled={!canResumeCounting || loading || preparingPipeline}
                 onClick={() => void handleResume()}
+              />
+              <ControlButton
+                icon={<RotateCcw className="h-5 w-5" strokeWidth={1.75} />}
+                label="Reiniciar video"
+                tone="primary"
+                disabled={!canRestartVideo}
+                onClick={() => void handleRestartVideo()}
               />
               <ControlButton
                 icon={<Square className="h-5 w-5" strokeWidth={1.75} />}
                 label="Parar contagem"
                 tone="danger"
-                disabled={(!running && !previewOnly && !cameraReady) || loading}
+                disabled={
+                  (!running && !previewOnly && !cameraReady) || loading || preparingPipeline
+                }
                 onClick={() => void handleStop()}
               />
             </div>
@@ -1396,7 +1875,7 @@ export function ContagemDemoScreen() {
         </div>
       </section>
 
-      <section className="grid shrink-0 grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-5">
+      <section className="grid shrink-0 grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
         <InfoCard
           title="Total de ovos"
           value={String(totalOvos)}
@@ -1459,6 +1938,16 @@ export function ContagemDemoScreen() {
               placeholder="AA"
             />
           </div>
+        </InfoCard>
+        <InfoCard title="Relatorio" icon={<FileText className="h-5 w-5" strokeWidth={1.75} />}>
+          <button
+            type="button"
+            disabled={reportLoading || loading}
+            onClick={() => void handleGenerateReport()}
+            className="mt-1 inline-flex w-full items-center justify-center gap-1 rounded-md border border-[var(--rovah-green)] bg-[rgba(155,203,59,0.12)] px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--rovah-green-dark)] transition hover:bg-[rgba(155,203,59,0.22)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {reportLoading ? "Gerando…" : "Gerar PDF"}
+          </button>
         </InfoCard>
       </section>
     </div>

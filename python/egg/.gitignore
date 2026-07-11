@@ -14,9 +14,15 @@ __pycache__/
 
 # Dados locais de teste
 debug_out/
+dataset/
+runs/
+models/
 tests/videos/*.avi
 tests/videos/*.mp4
 videos/*.mp4
+videos/*.avi
+videos/*.mov
+videos/*.mkv
 videos/*.jpg
 videos/*.png
 

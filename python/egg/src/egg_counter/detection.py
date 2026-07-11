@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -82,7 +84,7 @@ class UltralyticsBackend(InferenceBackend):
             for box in boxes:
                 class_id = int(box.cls[0].item())
                 label = self._resolve_label(class_id)
-                if self.runtime.target_label and label != self.runtime.target_label:
+                if self.runtime.target_label and not _labels_match(label, self.runtime.target_label):
                     continue
 
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -101,6 +103,282 @@ class UltralyticsBackend(InferenceBackend):
         if isinstance(self._model_names, list) and 0 <= class_id < len(self._model_names):
             return str(self._model_names[class_id])
         return str(class_id)
+
+
+class EnsembleBackend(InferenceBackend):
+    """Combina previsoes de multiplos YOLOs (ex.: best_v1 + best_v2) por consenso."""
+
+    def __init__(self, runtime: RuntimeConfig) -> None:
+        self.runtime = runtime
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise RuntimeError(
+                "Ultralytics nao esta instalado. Rode `pip install -e .` no projeto."
+            ) from exc
+
+        paths = list(runtime.model_paths) if runtime.model_paths else []
+        if not paths and runtime.model_path:
+            paths = [runtime.model_path]
+        if len(paths) < 2:
+            # Fallback automatico para os pesos do Colab se existirem
+            root = Path(runtime.model_path).resolve().parent if runtime.model_path else Path("models")
+            for name in ("best_v1.pt", "best_v2.pt"):
+                candidate = root / name
+                if candidate.is_file() and str(candidate) not in paths:
+                    paths.append(str(candidate))
+        if not paths:
+            raise RuntimeError(
+                "Ensemble sem modelos. Configure model_paths: [models/best_v1.pt, models/best_v2.pt]"
+            )
+
+        self.models = []
+        self._model_names = None
+        for path in paths:
+            if not Path(path).is_file():
+                raise RuntimeError(f"Peso do ensemble nao encontrado: {path}")
+            model = YOLO(path)
+            self.models.append(model)
+            self._model_names = model.names
+        logger.info("Ensemble ativo com %s modelos: %s", len(self.models), paths)
+
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        per_model: list[list[Detection]] = []
+        for model in self.models:
+            results = model.predict(
+                source=frame,
+                conf=max(0.15, self.runtime.confidence * 0.7),
+                iou=self.runtime.iou,
+                verbose=False,
+            )
+            detections: list[Detection] = []
+            for result in results:
+                boxes = getattr(result, "boxes", None)
+                if boxes is None:
+                    continue
+                for box in boxes:
+                    class_id = int(box.cls[0].item())
+                    label = self._resolve_label(class_id)
+                    if self.runtime.target_label and not _labels_match(
+                        label, self.runtime.target_label
+                    ):
+                        continue
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    detections.append(
+                        Detection(
+                            bbox=(int(x1), int(y1), int(x2), int(y2)),
+                            confidence=float(box.conf[0].item()),
+                            label=label,
+                        )
+                    )
+            per_model.append(detections)
+
+        return _consensus_merge(
+            per_model,
+            iou_threshold=self.runtime.ensemble_iou,
+            solo_confidence=self.runtime.ensemble_solo_confidence,
+        )
+
+    def _resolve_label(self, class_id: int) -> str:
+        if isinstance(self._model_names, dict):
+            return str(self._model_names.get(class_id, class_id))
+        if isinstance(self._model_names, list) and 0 <= class_id < len(self._model_names):
+            return str(self._model_names[class_id])
+        return str(class_id)
+
+
+def _consensus_merge(
+    per_model: list[list[Detection]],
+    *,
+    iou_threshold: float,
+    solo_confidence: float,
+) -> list[Detection]:
+    """Mantem boxes com consenso (>=2 modelos) ou confianca solo alta."""
+    tagged: list[tuple[int, Detection]] = []
+    for model_idx, detections in enumerate(per_model):
+        for det in detections:
+            tagged.append((model_idx, det))
+    tagged.sort(key=lambda item: item[1].confidence, reverse=True)
+
+    used = [False] * len(tagged)
+    merged: list[Detection] = []
+    for index, (model_idx, seed) in enumerate(tagged):
+        if used[index]:
+            continue
+        cluster = [(model_idx, seed)]
+        used[index] = True
+        voters = {model_idx}
+        for other_index in range(index + 1, len(tagged)):
+            if used[other_index]:
+                continue
+            other_model, other = tagged[other_index]
+            if other.label != seed.label:
+                continue
+            if _bbox_overlap_ratio(seed.bbox, other.bbox) < iou_threshold:
+                continue
+            used[other_index] = True
+            cluster.append((other_model, other))
+            voters.add(other_model)
+
+        max_conf = max(det.confidence for _, det in cluster)
+        if len(voters) < 2 and max_conf < solo_confidence:
+            continue
+
+        xs1 = [det.bbox[0] for _, det in cluster]
+        ys1 = [det.bbox[1] for _, det in cluster]
+        xs2 = [det.bbox[2] for _, det in cluster]
+        ys2 = [det.bbox[3] for _, det in cluster]
+        confs = [det.confidence for _, det in cluster]
+        # Consenso: media ponderada pela confianca
+        weight = sum(confs) or 1.0
+        bbox = (
+            int(round(sum(x * c for x, c in zip(xs1, confs)) / weight)),
+            int(round(sum(y * c for y, c in zip(ys1, confs)) / weight)),
+            int(round(sum(x * c for x, c in zip(xs2, confs)) / weight)),
+            int(round(sum(y * c for y, c in zip(ys2, confs)) / weight)),
+        )
+        boost = 1.0 + (0.08 * max(0, len(voters) - 1))
+        merged.append(
+            Detection(
+                bbox=bbox,
+                confidence=min(0.99, max_conf * boost),
+                label=seed.label,
+            )
+        )
+    return merged
+
+
+def _labels_match(label: str, target: str) -> bool:
+    aliases = {
+        "egg": {"egg", "ovo", "eggs"},
+        "ovo": {"egg", "ovo", "eggs"},
+    }
+    normalized = label.lower().strip()
+    wanted = target.lower().strip()
+    return normalized == wanted or normalized in aliases.get(wanted, set())
+
+
+class RoboflowBackend(InferenceBackend):
+    """Detecta ovos via Roboflow RAPID (API na nuvem)."""
+
+    def __init__(self, runtime: RuntimeConfig) -> None:
+        if not runtime.roboflow_api_key:
+            raise RuntimeError(
+                "ROBOFLOW_API_KEY nao configurada. "
+                "Crie python/egg/.env com ROBOFLOW_API_KEY=..."
+            )
+        if not runtime.roboflow_workspace or not runtime.roboflow_workflow_id:
+            raise RuntimeError(
+                "Configure roboflow_workspace e roboflow_workflow_id no runtime.yaml "
+                "ou via ROBOFLOW_WORKSPACE / ROBOFLOW_WORKFLOW_ID."
+            )
+
+        try:
+            from inference_sdk import InferenceHTTPClient
+        except ImportError as exc:
+            raise RuntimeError(
+                "inference-sdk nao esta instalado. Rode: pip install inference-sdk"
+            ) from exc
+
+        self.runtime = runtime
+        self.workspace = runtime.roboflow_workspace
+        self.workflow_id = runtime.roboflow_workflow_id
+        self.client = InferenceHTTPClient(
+            api_url=runtime.roboflow_api_url,
+            api_key=runtime.roboflow_api_key,
+        )
+        logger.info(
+            "Roboflow backend ativo: workspace=%s workflow=%s",
+            self.workspace,
+            self.workflow_id,
+        )
+
+    def detect(self, frame: np.ndarray) -> list[Detection]:
+        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            logger.warning("Falha ao codificar frame para Roboflow")
+            return []
+
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as handle:
+                handle.write(encoded.tobytes())
+                tmp_path = Path(handle.name)
+            try:
+                result = self.client.run_workflow(
+                    workspace_name=self.workspace,
+                    workflow_id=self.workflow_id,
+                    images={"image": str(tmp_path)},
+                    use_cache=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Roboflow inferencia falhou: %s", exc)
+                return []
+            return self._parse_result(result)
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
+    def _parse_result(self, result: Any) -> list[Detection]:
+        predictions = _extract_roboflow_predictions(result)
+        detections: list[Detection] = []
+        for item in predictions:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("class") or item.get("label") or "egg")
+            if self.runtime.target_label and not _labels_match(label, self.runtime.target_label):
+                continue
+            confidence = float(item.get("confidence", 0.0))
+            if confidence < self.runtime.confidence:
+                continue
+            bbox = _roboflow_item_to_xyxy(item)
+            if bbox is None:
+                continue
+            detections.append(Detection(bbox=bbox, confidence=confidence, label=label))
+        return detections
+
+
+def _extract_roboflow_predictions(result: Any) -> list[dict[str, Any]]:
+    """Normaliza respostas do run_workflow / infer para lista de predicoes."""
+    if result is None:
+        return []
+
+    payloads: list[Any] = result if isinstance(result, list) else [result]
+    collected: list[dict[str, Any]] = []
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        preds = payload.get("predictions", payload)
+        if isinstance(preds, dict):
+            inner = preds.get("predictions", [])
+            if isinstance(inner, list):
+                collected.extend(item for item in inner if isinstance(item, dict))
+            continue
+        if isinstance(preds, list):
+            collected.extend(item for item in preds if isinstance(item, dict))
+    return collected
+
+
+def _roboflow_item_to_xyxy(item: dict[str, Any]) -> tuple[int, int, int, int] | None:
+    """Converte predicao Roboflow (centro x/y + w/h) para bbox xyxy."""
+    if all(k in item for k in ("x1", "y1", "x2", "y2")):
+        return (
+            int(item["x1"]),
+            int(item["y1"]),
+            int(item["x2"]),
+            int(item["y2"]),
+        )
+    if all(k in item for k in ("x", "y", "width", "height")):
+        cx = float(item["x"])
+        cy = float(item["y"])
+        width = float(item["width"])
+        height = float(item["height"])
+        x1 = int(round(cx - width / 2.0))
+        y1 = int(round(cy - height / 2.0))
+        x2 = int(round(cx + width / 2.0))
+        y2 = int(round(cy + height / 2.0))
+        return (x1, y1, x2, y2)
+    return None
 
 
 class ClassicBackend(InferenceBackend):
@@ -523,24 +801,24 @@ class ClassicBackend(InferenceBackend):
         color_mask = cv2.morphologyEx(
             color_mask,
             cv2.MORPH_OPEN,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
         )
         color_mask = cv2.morphologyEx(
             color_mask,
             cv2.MORPH_CLOSE,
             cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE,
-                (max(9, int(hole_radius * 1.2)) | 1, max(11, int(hole_radius * 2.0)) | 1),
+                (max(5, int(hole_radius * 0.7)) | 1, max(7, int(hole_radius * 1.1)) | 1),
             ),
             iterations=1,
         )
 
-        # Ovos marrons neste video aparecem nas colunas da esquerda da esteira.
-        lane_mask = color_mask[:, : max(1, int(width * 0.55))].copy()
+        # Mild erode keeps touching eggs separable
+        lane_mask = color_mask.copy()
         lane_mask = cv2.erode(
             lane_mask,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
-            iterations=2,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+            iterations=1,
         )
         candidates = self._collect_brown_candidates(
             lane_mask,
@@ -551,6 +829,59 @@ class ClassicBackend(InferenceBackend):
             width,
             x_offset=0,
         )
+        return candidates
+
+    def _detect_brown_by_distance_peaks(
+        self,
+        color_mask: np.ndarray,
+        hole_radius: float,
+        gray: np.ndarray,
+        hsv: np.ndarray,
+    ) -> list[tuple[tuple[int, int, int, int], float, float]]:
+        """Split crowded brown eggs using distance-transform local maxima."""
+        if color_mask.size == 0 or int(cv2.countNonZero(color_mask)) < 200:
+            return []
+
+        dist = cv2.distanceTransform(color_mask, cv2.DIST_L2, 5)
+        typical = self._min_egg_dimension(hole_radius)
+        min_peak = max(4.0, typical * 0.22)
+        kernel = max(9, int(typical * 0.85)) | 1
+        dilated = cv2.dilate(dist, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel, kernel)))
+        peaks = (dist >= dilated) & (dist >= min_peak) & (color_mask > 0)
+        peak_points = np.column_stack(np.where(peaks))
+        if peak_points.size == 0:
+            return []
+
+        # Keep spatially separated peaks
+        selected: list[tuple[int, int, float]] = []
+        min_sep = max(18.0, typical * 0.55)
+        for y, x in sorted(peak_points, key=lambda p: float(dist[p[0], p[1]]), reverse=True):
+            if any((x - sx) ** 2 + (y - sy) ** 2 < min_sep**2 for sy, sx, _ in selected):
+                continue
+            selected.append((int(y), int(x), float(dist[y, x])))
+            if len(selected) >= 20:
+                break
+
+        height, width = gray.shape[:2]
+        half = max(14, int(typical * 0.72))
+        candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
+        for y, x, radius in selected:
+            x1 = max(0, x - half)
+            y1 = max(0, y - half)
+            x2 = min(width, x + half)
+            y2 = min(height, y + half)
+            area = float((x2 - x1) * (y2 - y1) * 0.55)
+            candidate = self._brown_bbox_candidate(
+                (x1, y1, x2, y2),
+                area,
+                hole_radius,
+                gray,
+                hsv,
+                width,
+                height,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
         return candidates
 
     def _collect_brown_candidates(
@@ -574,7 +905,11 @@ class ClassicBackend(InferenceBackend):
 
             x, y, box_width, box_height = cv2.boundingRect(contour)
             bbox = (x_offset + x, y, x_offset + x + box_width, y + box_height)
-            if box_height > height * 0.4 or box_width > width * 0.25:
+            typical_egg = self._min_egg_dimension(hole_radius)
+            too_wide = box_width > max(width * 0.18, typical_egg * 1.55)
+            too_tall = box_height > max(height * 0.32, typical_egg * 1.7)
+            too_large = area > max(min_area * 1.7, np.pi * (typical_egg * 0.75) ** 2 * 1.8)
+            if too_wide or too_tall or too_large:
                 candidates.extend(
                     self._split_brown_blob_candidates(
                         color_mask,
@@ -614,49 +949,99 @@ class ClassicBackend(InferenceBackend):
     ) -> list[tuple[tuple[int, int, int, int], float, float]]:
         x1, y1, x2, y2 = bbox
         roi_mask = color_mask[y1:y2, x1:x2]
+        if roi_mask.size == 0:
+            return []
+
         dist = cv2.distanceTransform(roi_mask, cv2.DIST_L2, 5)
         candidates: list[tuple[tuple[int, int, int, int], float, float]] = []
         frame_height, frame_width = gray.shape[:2]
+        typical_egg = self._min_egg_dimension(hole_radius)
 
-        if dist.max() > 0:
-            _, sure_fg = cv2.threshold(dist, 0.42 * dist.max(), 255, 0)
+        if float(dist.max()) > 0:
+            # Lower threshold separates touching eggs
+            _, sure_fg = cv2.threshold(dist, 0.28 * float(dist.max()), 255, 0)
             sure_fg = sure_fg.astype(np.uint8)
             sure_fg = cv2.erode(
                 sure_fg,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
                 iterations=1,
             )
-            sub_contours, _ = cv2.findContours(sure_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Watershed markers from local maxima
+            unknown = cv2.subtract(roi_mask, sure_fg)
+            _, markers = cv2.connectedComponents(sure_fg)
+            markers = markers + 1
+            markers[unknown == 255] = 0
+            color_roi = cv2.cvtColor(roi_mask, cv2.COLOR_GRAY2BGR)
+            cv2.watershed(color_roi, markers)
 
-            for contour in sub_contours:
-                area = cv2.contourArea(contour)
-                if area < min_area * 0.55:
-                    continue
-
-                sx, sy, sw, sh = cv2.boundingRect(contour)
-                sub_bbox = (x_offset + x1 + sx, y1 + sy, x_offset + x1 + sx + sw, y1 + sy + sh)
-                candidate = self._brown_bbox_candidate(
-                    sub_bbox,
-                    area,
-                    hole_radius,
-                    gray,
-                    hsv,
-                    frame_width,
-                    frame_height,
+            labels = [int(value) for value in np.unique(markers) if int(value) > 1]
+            for label in labels:
+                component = np.zeros_like(roi_mask)
+                component[markers == label] = 255
+                sub_contours, _ = cv2.findContours(
+                    component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                 )
-                if candidate is not None:
-                    candidates.append(candidate)
+                for contour in sub_contours:
+                    area = cv2.contourArea(contour)
+                    if area < min_area * 0.45:
+                        continue
+                    sx, sy, sw, sh = cv2.boundingRect(contour)
+                    sub_bbox = (
+                        x_offset + x1 + sx,
+                        y1 + sy,
+                        x_offset + x1 + sx + sw,
+                        y1 + sy + sh,
+                    )
+                    candidate = self._brown_bbox_candidate(
+                        sub_bbox,
+                        area,
+                        hole_radius,
+                        gray,
+                        hsv,
+                        frame_width,
+                        frame_height,
+                    )
+                    if candidate is not None:
+                        candidates.append(candidate)
 
-        max_egg_height = self._min_egg_dimension(hole_radius) * 1.75
-        candidates = [
-            candidate
-            for candidate in candidates
-            if (candidate[0][3] - candidate[0][1]) <= max_egg_height
-        ]
+            if len(candidates) < 2:
+                sub_contours, _ = cv2.findContours(
+                    sure_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                for contour in sub_contours:
+                    area = cv2.contourArea(contour)
+                    if area < min_area * 0.45:
+                        continue
+                    sx, sy, sw, sh = cv2.boundingRect(contour)
+                    sub_bbox = (
+                        x_offset + x1 + sx,
+                        y1 + sy,
+                        x_offset + x1 + sx + sw,
+                        y1 + sy + sh,
+                    )
+                    candidate = self._brown_bbox_candidate(
+                        sub_bbox,
+                        area,
+                        hole_radius,
+                        gray,
+                        hsv,
+                        frame_width,
+                        frame_height,
+                    )
+                    if candidate is not None:
+                        candidates.append(candidate)
 
-        if len(candidates) < 2 and (y2 - y1) > self._min_egg_dimension(hole_radius) * 2.0:
-            mid_y = (y1 + y2) // 2
-            for sub_bbox in ((x_offset + x1, y1, x_offset + x2, mid_y), (x_offset + x1, mid_y, x_offset + x2, y2)):
+        candidates = self._dedupe_split_candidates(candidates)
+
+        # Geometric split for side-by-side / stacked touching eggs
+        box_w = x2 - x1
+        box_h = y2 - y1
+        if len(candidates) < 2 and box_w >= typical_egg * 1.45:
+            mid_x = (x1 + x2) // 2
+            for sub_bbox in (
+                (x_offset + x1, y1, x_offset + mid_x, y2),
+                (x_offset + mid_x, y1, x_offset + x2, y2),
+            ):
                 sub_area = float((sub_bbox[2] - sub_bbox[0]) * (sub_bbox[3] - sub_bbox[1]) * 0.55)
                 candidate = self._brown_bbox_candidate(
                     sub_bbox,
@@ -670,7 +1055,60 @@ class ClassicBackend(InferenceBackend):
                 if candidate is not None:
                     candidates.append(candidate)
 
-        return candidates
+        if len(candidates) < 2 and box_h >= typical_egg * 1.6:
+            mid_y = (y1 + y2) // 2
+            for sub_bbox in (
+                (x_offset + x1, y1, x_offset + x2, mid_y),
+                (x_offset + x1, mid_y, x_offset + x2, y2),
+            ):
+                sub_area = float((sub_bbox[2] - sub_bbox[0]) * (sub_bbox[3] - sub_bbox[1]) * 0.55)
+                candidate = self._brown_bbox_candidate(
+                    sub_bbox,
+                    sub_area,
+                    hole_radius,
+                    gray,
+                    hsv,
+                    frame_width,
+                    frame_height,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+
+        candidates = self._dedupe_split_candidates(candidates)
+        if candidates:
+            return candidates
+
+        # Last resort: keep original bbox if it looks like a single egg
+        original = self._brown_bbox_candidate(
+            (x_offset + x1, y1, x_offset + x2, y2),
+            float((x2 - x1) * (y2 - y1) * 0.55),
+            hole_radius,
+            gray,
+            hsv,
+            frame_width,
+            frame_height,
+        )
+        return [original] if original is not None else []
+
+    def _dedupe_split_candidates(
+        self,
+        candidates: list[tuple[tuple[int, int, int, int], float, float]],
+    ) -> list[tuple[tuple[int, int, int, int], float, float]]:
+        """Drop nested/duplicate boxes from watershed (keep the smaller distinct eggs)."""
+        ordered = sorted(candidates, key=lambda item: item[2])  # smaller area first
+        kept: list[tuple[tuple[int, int, int, int], float, float]] = []
+        for candidate in ordered:
+            bbox = candidate[0]
+            # Skip if almost fully contained in an already kept box or vice-versa
+            redundant = False
+            for other in kept:
+                overlap = _bbox_overlap_ratio(bbox, other[0])
+                if overlap >= 0.55:
+                    redundant = True
+                    break
+            if not redundant:
+                kept.append(candidate)
+        return kept
 
     def _brown_bbox_candidate(
         self,
@@ -689,6 +1127,9 @@ class ClassicBackend(InferenceBackend):
             return None
         if box_width > width * 0.28 or box_height > height * 0.45:
             return None
+        # Reject edge artifacts (belt corners / UI crop)
+        if x1 <= 2 or y1 <= 2 or x2 >= width - 2:
+            return None
 
         roi_gray = gray[y1:y2, x1:x2]
         roi_hsv = hsv[y1:y2, x1:x2]
@@ -696,7 +1137,7 @@ class ClassicBackend(InferenceBackend):
             return None
 
         aspect = box_width / max(1.0, box_height)
-        if aspect < 0.55 or aspect > 1.9:
+        if aspect < 0.45 or aspect > 2.1:
             return None
 
         confidence = min(0.94, 0.72 + min(area, 3200) / 5000)
@@ -720,19 +1161,18 @@ class ClassicBackend(InferenceBackend):
         hole_radius: float,
     ) -> list[tuple[tuple[int, int, int, int], float]]:
         kept: list[tuple[tuple[int, int, int, int], float, float, float, float]] = []
-        min_distance = max(45.0, hole_radius * 3.2)
+        # Distancia menor evita fundir ovos vizinhos na mesma fileira
+        min_distance = max(28.0, hole_radius * 2.2)
 
         for bbox, confidence, score in sorted(candidates, key=lambda item: item[2], reverse=True):
             center_x = (bbox[0] + bbox[2]) / 2
             center_y = (bbox[1] + bbox[3]) / 2
-            bbox_width = bbox[2] - bbox[0]
-            bbox_height = bbox[3] - bbox[1]
             if any(
                 (
                     (center_x - other_center_x) ** 2 + (center_y - other_center_y) ** 2
                     <= min_distance**2
                 )
-                or _bbox_overlap_ratio(bbox, other_bbox) >= 0.35
+                or _bbox_overlap_ratio(bbox, other_bbox) >= 0.55
                 for other_bbox, _, _, other_center_x, other_center_y in kept
             ):
                 continue
@@ -762,13 +1202,172 @@ class ClassicBackend(InferenceBackend):
             return False
         if self._is_hollow_belt_hole(frame, bbox, hole_radius):
             return False
-        if self._passes_low_contrast_egg_shape(frame, bbox, hole_radius):
-            return True
+        if self._looks_like_belt_hole(frame, bbox, hole_radius):
+            return False
+        if not self._has_solid_egg_fill(frame, bbox):
+            return False
+
         if self._passes_brown_egg_shape(frame, bbox, hole_radius):
+            return True
+        if self._passes_low_contrast_egg_shape(frame, bbox, hole_radius):
             return True
         if self._is_on_irregular_belt(frame, bbox, hole_radius):
             return False
         return self._is_filled_egg_blob(frame, bbox, hole_radius)
+
+    def _has_solid_egg_fill(
+        self,
+        frame: np.ndarray,
+        bbox: tuple[int, int, int, int],
+    ) -> bool:
+        """Eggs are filled (center not darker than the belt hole pattern)."""
+        x1, y1, x2, y2 = bbox
+        roi_gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        height, width = roi_gray.shape
+        if height < 10 or width < 10:
+            return False
+
+        margin_y = max(2, height // 5)
+        margin_x = max(2, width // 5)
+        center = roi_gray[margin_y:-margin_y, margin_x:-margin_x]
+        border_mask = np.ones(roi_gray.shape, dtype=np.uint8)
+        border_mask[margin_y:-margin_y, margin_x:-margin_x] = 0
+        border = roi_gray[border_mask == 1]
+        if center.size == 0 or border.size == 0:
+            return False
+
+        center_mean = float(center.mean())
+        border_mean = float(border.mean())
+        center_std = float(center.std())
+        # Belt holes: dark center, brighter rim
+        if center_mean < border_mean - 12.0:
+            return False
+        if center_mean < 105.0:
+            return False
+        # Perforated belt patch: many dark pixels + high local variance
+        dark_ratio = float((center < 115).mean())
+        if dark_ratio > 0.14 and center_std > 22.0:
+            return False
+        if dark_ratio > 0.18:
+            return False
+        return True
+
+    def _is_perforated_belt_patch(self, frame: np.ndarray, bbox: tuple[int, int, int, int]) -> bool:
+        """True when the box covers empty belt with multiple dark holes."""
+        x1, y1, x2, y2 = bbox
+        roi = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        if roi.size == 0 or min(roi.shape) < 16:
+            return False
+        blur = cv2.GaussianBlur(roi, (5, 5), 1)
+        _, dark = cv2.threshold(blur, 115, 255, cv2.THRESH_BINARY_INV)
+        dark = cv2.morphologyEx(
+            dark,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+        contours, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        hole_like = 0
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 25 or area > 900:
+                continue
+            bx, by, bw, bh = cv2.boundingRect(contour)
+            aspect = bw / max(1.0, bh)
+            if 0.65 <= aspect <= 1.45:
+                hole_like += 1
+        # Empty belt patches usually contain several perforations
+        return hole_like >= 2
+
+    def _has_egg_body_color(self, frame: np.ndarray, bbox: tuple[int, int, int, int]) -> bool:
+        """Reject empty belt patches that look bright but lack egg chroma."""
+        if self._is_perforated_belt_patch(frame, bbox):
+            return False
+        x1, y1, x2, y2 = bbox
+        roi = frame[y1:y2, x1:x2]
+        if roi.size == 0:
+            return False
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        h, w = gray.shape
+        cy1, cy2 = h // 4, 3 * h // 4
+        cx1, cx2 = w // 4, 3 * w // 4
+        center_gray = gray[cy1:cy2, cx1:cx2]
+        center_hsv = hsv[cy1:cy2, cx1:cx2]
+        if center_gray.size == 0:
+            return False
+        gray_mean = float(center_gray.mean())
+        gray_std = float(center_gray.std())
+        sat_mean = float(center_hsv[:, :, 1].mean())
+        hue_mean = float(center_hsv[:, :, 0].mean())
+        dark_ratio = float((center_gray < 115).mean())
+        if dark_ratio > 0.16:
+            return False
+        # Brown / beige eggs on this belt
+        if 5 <= hue_mean <= 62 and sat_mean >= 28 and 105 < gray_mean < 200 and gray_std < 36.0:
+            return True
+        # White eggs: bright, uniform, not empty belt glare / hole grid
+        if (
+            sat_mean < 55
+            and 155 < gray_mean < 205
+            and gray_std < 18.0
+            and sat_mean >= 10.0
+            and dark_ratio < 0.08
+        ):
+            return True
+        return False
+
+    def _looks_like_belt_hole(
+        self,
+        frame: np.ndarray,
+        bbox: tuple[int, int, int, int],
+        hole_radius: float,
+    ) -> bool:
+        """Reject circular dark openings that match belt perforation size."""
+        x1, y1, x2, y2 = bbox
+        width = x2 - x1
+        height = y2 - y1
+        short_side = min(width, height)
+        long_side = max(width, height)
+        hole_diameter = self._hole_diameter(hole_radius)
+
+        # Typical belt hole size band
+        if short_side > hole_diameter * 2.8:
+            return False
+
+        aspect = width / max(1.0, height)
+        if aspect < 0.75 or aspect > 1.35:
+            return False
+
+        roi_gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        roi_hsv = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+        center = roi_gray[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4]
+        if center.size == 0:
+            return False
+
+        center_mean = float(center.mean())
+        sat_mean = float(roi_hsv[:, :, 1].mean())
+        # Filled egg body is bright enough — not a dark belt hole
+        if center_mean >= 130.0:
+            return False
+        # Dark circular opening with low/medium saturation => hole
+        if center_mean < 125.0 and sat_mean < 55.0 and long_side <= hole_diameter * 3.2:
+            return True
+
+        blur = cv2.GaussianBlur(roi_gray, (5, 5), 1)
+        circles = cv2.HoughCircles(
+            blur,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=max(8, short_side // 2),
+            param1=50,
+            param2=14,
+            minRadius=max(4, int(short_side * 0.28)),
+            maxRadius=max(6, int(short_side * 0.48)),
+        )
+        if circles is None:
+            return False
+        # Only treat as hole if the circle is dark inside
+        return center_mean < 120.0
 
     def _passes_brown_egg_shape(
         self,
@@ -799,7 +1398,7 @@ class ClassicBackend(InferenceBackend):
             return False
 
         aspect = (x2 - x1) / max(1.0, y2 - y1)
-        if aspect < 0.55 or aspect > 1.9:
+        if aspect < 0.45 or aspect > 2.1:
             return False
 
         return float(center_gray.std()) <= 52.0
@@ -855,20 +1454,20 @@ class ClassicBackend(InferenceBackend):
 
         center_mean = float(center_gray.mean())
         border_mean = float(border_gray.mean())
-        if center_mean < border_mean - 20.0:
+        if center_mean < border_mean - 12.0:
             return True
 
-        max_hole_dim = max(40.0, hole_radius * 3.4)
+        max_hole_dim = max(48.0, hole_radius * 3.8)
         if min(height, width) > max_hole_dim:
             return False
 
         roi_std = float(roi_gray.std())
-        if roi_std < 52.0:
+        if roi_std < 40.0:
             return False
 
         _, dark_mask = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         dark_ratio = float((dark_mask > 0).mean())
-        if dark_ratio < 0.12:
+        if dark_ratio < 0.10:
             return False
 
         contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -877,7 +1476,7 @@ class ClassicBackend(InferenceBackend):
 
         largest = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(largest)
-        if area < 0.12 * height * width:
+        if area < 0.10 * height * width:
             return False
 
         perimeter = cv2.arcLength(largest, True)
@@ -885,7 +1484,7 @@ class ClassicBackend(InferenceBackend):
             return False
 
         circularity = 4.0 * np.pi * area / (perimeter * perimeter)
-        return circularity >= 0.45
+        return circularity >= 0.40
 
     def _is_on_irregular_belt(
         self,
@@ -1051,9 +1650,40 @@ class Detector:
     def __init__(self, runtime: RuntimeConfig) -> None:
         self.runtime = runtime
         self.backend = self._build_backend(runtime)
+        self._classic_fallback: ClassicBackend | None = None
+        if runtime.backend in {"ultralytics", "roboflow", "ensemble"}:
+            # Filtros de furo/esteira sobre deteccoes do modelo
+            self._classic_fallback = ClassicBackend(
+                RuntimeConfig(
+                    backend="classic",
+                    normalize=runtime.normalize,
+                    reference_image=runtime.reference_image,
+                    diff_threshold=runtime.diff_threshold,
+                )
+            )
 
     def detect(self, frame: np.ndarray, offset: tuple[int, int] = (0, 0)) -> list[Detection]:
         detections = self.backend.detect(frame)
+        detections = [_normalize_egg_label(det) for det in detections]
+
+        classic = self._classic_fallback
+        if classic is not None:
+            # Prefer YOLO trained on this belt; classic only fills high-quality misses
+            hole_radius = classic._estimate_hole_radius(frame)
+            yolo_keep = [
+                det
+                for det in detections
+                if det.confidence >= max(0.28, self.runtime.confidence * 0.85)
+                and self._is_clean_egg_box(frame, det.bbox, classic, hole_radius)
+            ]
+            yolo_keep = self._split_merged_egg_boxes(frame, yolo_keep, classic, hole_radius)
+            # Do not merge classic: it reintroduces belt-hole / empty-belt FPs
+            detections = self._nms_detections(yolo_keep, overlap_threshold=0.35)
+        else:
+            detections = self._filter_tiny(detections, frame)
+
+        detections = self._filter_tiny(detections, frame)
+
         if offset == (0, 0):
             return detections
 
@@ -1070,9 +1700,89 @@ class Detector:
             )
         return translated
 
+    @staticmethod
+    def _is_clean_egg_box(
+        frame: np.ndarray,
+        bbox: tuple[int, int, int, int],
+        classic: ClassicBackend,
+        hole_radius: float,
+    ) -> bool:
+        return (
+            not classic._looks_like_belt_hole(frame, bbox, hole_radius)
+            and not classic._is_perforated_belt_patch(frame, bbox)
+            and classic._has_solid_egg_fill(frame, bbox)
+            and classic._has_egg_body_color(frame, bbox)
+        )
+
+    @staticmethod
+    def _filter_tiny(detections: list[Detection], frame: np.ndarray) -> list[Detection]:
+        min_side = max(28, int(min(frame.shape[:2]) * 0.05))
+        return [
+            det
+            for det in detections
+            if (det.bbox[2] - det.bbox[0]) >= min_side and (det.bbox[3] - det.bbox[1]) >= min_side
+        ]
+
+    @staticmethod
+    def _nms_detections(
+        detections: list[Detection],
+        overlap_threshold: float = 0.35,
+    ) -> list[Detection]:
+        """Keep highest-confidence box when two detections overlap heavily."""
+        ordered = sorted(detections, key=lambda det: det.confidence, reverse=True)
+        kept: list[Detection] = []
+        for candidate in ordered:
+            redundant = False
+            for existing in kept:
+                if _bbox_overlap_ratio(candidate.bbox, existing.bbox) >= overlap_threshold:
+                    redundant = True
+                    break
+            if not redundant:
+                kept.append(candidate)
+        return kept
+
+    def _split_merged_egg_boxes(
+        self,
+        frame: np.ndarray,
+        detections: list[Detection],
+        classic: ClassicBackend,
+        hole_radius: float,
+    ) -> list[Detection]:
+        """Split oversized boxes that likely cover two touching eggs."""
+        typical = classic._min_egg_dimension(hole_radius)
+        split: list[Detection] = []
+        for det in detections:
+            x1, y1, x2, y2 = det.bbox
+            width = x2 - x1
+            height = y2 - y1
+            parts: list[tuple[int, int, int, int]] = []
+            if width >= typical * 1.4 and width / max(1.0, height) >= 1.15:
+                mid = (x1 + x2) // 2
+                parts = [(x1, y1, mid, y2), (mid, y1, x2, y2)]
+            elif height >= typical * 1.55 and height / max(1.0, width) >= 1.25:
+                mid = (y1 + y2) // 2
+                parts = [(x1, y1, x2, mid), (x1, mid, x2, y2)]
+            else:
+                split.append(det)
+                continue
+
+            kept = [
+                Detection(bbox=part, confidence=det.confidence * 0.95, label=det.label)
+                for part in parts
+                if self._is_clean_egg_box(frame, part, classic, hole_radius)
+            ]
+            split.extend(kept if len(kept) >= 2 else [det])
+        return split
+
     def _build_backend(self, runtime: RuntimeConfig) -> InferenceBackend:
         if runtime.backend == "classic":
             return ClassicBackend(runtime)
+
+        if runtime.backend == "roboflow":
+            return RoboflowBackend(runtime)
+
+        if runtime.backend == "ensemble":
+            return EnsembleBackend(runtime)
 
         if runtime.backend != "ultralytics":
             raise ValueError(f"Backend de inferencia nao suportado: {runtime.backend}")
@@ -1084,3 +1794,30 @@ class Detector:
             )
 
         return UltralyticsBackend(runtime)
+
+
+def _normalize_egg_label(detection: Detection) -> Detection:
+    label = detection.label.lower().strip()
+    if label in {"ovo", "egg", "eggs"}:
+        return Detection(bbox=detection.bbox, confidence=detection.confidence, label="egg")
+    return detection
+
+
+def _merge_detections(
+    primary: list[Detection],
+    secondary: list[Detection],
+    overlap_threshold: float = 0.55,
+) -> list[Detection]:
+    """Merge YOLO + classic detections, avoiding duplicate boxes."""
+    merged = list(primary)
+    for candidate in secondary:
+        overlaps = False
+        for index, existing in enumerate(merged):
+            if _bbox_overlap_ratio(candidate.bbox, existing.bbox) >= overlap_threshold:
+                overlaps = True
+                if candidate.confidence > existing.confidence:
+                    merged[index] = candidate
+                break
+        if not overlaps:
+            merged.append(candidate)
+    return merged

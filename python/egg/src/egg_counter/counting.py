@@ -1,30 +1,44 @@
 from __future__ import annotations
 
+from math import dist
+
 from egg_counter.config import LineConfig
 from egg_counter.models import CountEvent, TrackedDetection
 
 
 class LineCounter:
-    def __init__(self, line: LineConfig) -> None:
+    """Counts eggs once when they cross the line in the configured direction."""
+
+    def __init__(self, line: LineConfig, *, spatial_cooldown_px: float = 38.0) -> None:
         self.line = line
         self.total_count = 0
         self.counted_track_ids: set[int] = set()
+        self.spatial_cooldown_px = spatial_cooldown_px
+        self._recent_crossings: list[tuple[float, float]] = []
 
     def update(self, tracked_objects: list[TrackedDetection]) -> list[CountEvent]:
         events: list[CountEvent] = []
         for tracked in tracked_objects:
             if tracked.track_id in self.counted_track_ids:
                 continue
-            previous_center = self._effective_previous_center(tracked)
+            # Require a real previous center — synthetic late detections caused overcount
+            previous_center = tracked.previous_center
             if previous_center is None:
                 continue
             if not self._crossed_line(previous_center, tracked.center):
                 continue
             if not self._matches_direction(previous_center, tracked.center):
                 continue
+            if self._is_near_recent_crossing(tracked.center):
+                # Same physical egg re-registered with a new track id
+                self.counted_track_ids.add(tracked.track_id)
+                continue
 
             self.total_count += 1
             self.counted_track_ids.add(tracked.track_id)
+            self._recent_crossings.append((float(tracked.center[0]), float(tracked.center[1])))
+            if len(self._recent_crossings) > 40:
+                self._recent_crossings = self._recent_crossings[-40:]
             events.append(
                 CountEvent(
                     track_id=tracked.track_id,
@@ -34,29 +48,11 @@ class LineCounter:
             )
         return events
 
-    def _effective_previous_center(
-        self,
-        tracked: TrackedDetection,
-    ) -> tuple[int, int] | None:
-        if tracked.previous_center is not None:
-            return tracked.previous_center
-
-        tolerance = 35
-        line_y = (self.line.y1 + self.line.y2) // 2
-        center_x, center_y = tracked.center
-        if abs(center_y - line_y) > tolerance:
-            return None
-
-        direction = self.line.direction
-        if direction == "bottom_to_top" and center_y <= line_y:
-            return (center_x, center_y + tolerance + 12)
-        if direction == "top_to_bottom" and center_y >= line_y:
-            return (center_x, center_y - tolerance - 12)
-        if direction == "left_to_right" and center_x <= (self.line.x1 + self.line.x2) // 2:
-            return (center_x - tolerance - 12, center_y)
-        if direction == "right_to_left" and center_x >= (self.line.x1 + self.line.x2) // 2:
-            return (center_x + tolerance + 12, center_y)
-        return None
+    def _is_near_recent_crossing(self, center: tuple[int, int]) -> bool:
+        for previous in self._recent_crossings:
+            if dist(center, previous) <= self.spatial_cooldown_px:
+                return True
+        return False
 
     def _crossed_line(
         self,

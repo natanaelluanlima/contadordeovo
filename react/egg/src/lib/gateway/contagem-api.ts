@@ -1,3 +1,10 @@
+export type ContagemTrack = {
+  track_id: number;
+  label: string;
+  confidence: number;
+  bbox: [number, number, number, number];
+};
+
 export type ContagemStatus = {
   state: string;
   mode: string;
@@ -5,6 +12,11 @@ export type ContagemStatus = {
   active_tracks: number;
   fps: number;
   annotated_frame_b64?: string | null;
+  frame_width?: number;
+  frame_height?: number;
+  line?: { x1: number; y1: number; x2: number; y2: number };
+  tracks?: ContagemTrack[];
+  skipped?: boolean;
   events?: Array<{
     track_id: number;
     label: string;

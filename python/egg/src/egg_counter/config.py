@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def _load_dotenv(path: Path) -> None:
+    """Carrega KEY=VALUE de um .env sem sobrescrever variaveis ja definidas."""
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 @dataclass(slots=True)
@@ -44,6 +60,7 @@ class CameraConfig:
 class RuntimeConfig:
     backend: str = "ultralytics"
     model_path: str = "yolov8n.pt"
+    model_paths: list[str] = field(default_factory=list)
     confidence: float = 0.35
     iou: float = 0.45
     target_label: str | None = None
@@ -54,6 +71,12 @@ class RuntimeConfig:
     diff_threshold: float = 55.0
     api_host: str = "0.0.0.0"
     api_port: int = 9002
+    roboflow_api_url: str = "https://detect.roboflow.com"
+    roboflow_api_key: str | None = None
+    roboflow_workspace: str | None = None
+    roboflow_workflow_id: str | None = None
+    ensemble_iou: float = 0.45
+    ensemble_solo_confidence: float = 0.55
 
 
 def load_named_video_profile(name: str, config_dir: str | Path = "config") -> tuple[CameraConfig, RuntimeConfig]:
@@ -68,6 +91,9 @@ def detect_video_profile(width: int, height: int) -> str | None:
     if abs(width - 960) <= 48 and abs(height - 540) <= 48:
         return "padrao"
     if abs(width - 848) <= 48 and abs(height - 478) <= 48:
+        return "testes"
+    # TESTE 5.mp4 e similares (640x474 / 640x480)
+    if abs(width - 640) <= 32 and abs(height - 480) <= 32:
         return "testes"
     return None
 
@@ -94,6 +120,10 @@ def load_camera_config(path: str | Path) -> CameraConfig:
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
     config_path = Path(path).resolve()
+    project_root = _find_project_root(config_path)
+    _load_dotenv(project_root / ".env")
+    _load_dotenv(project_root.parent.parent / ".env")
+
     data = _load_yaml(config_path)
     reference_image = data.get("reference_image")
     if isinstance(reference_image, str):
@@ -103,9 +133,23 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
     if not Path(model_path).is_absolute() and "/" in model_path.replace("\\", "/"):
         model_path = _resolve_relative_path(model_path, config_path)
 
+    raw_paths = data.get("model_paths") or []
+    model_paths: list[str] = []
+    if isinstance(raw_paths, list):
+        for item in raw_paths:
+            path_value = str(item)
+            if not Path(path_value).is_absolute() and "/" in path_value.replace("\\", "/"):
+                path_value = _resolve_relative_path(path_value, config_path)
+            model_paths.append(path_value)
+
+    api_key = data.get("roboflow_api_key") or os.environ.get("ROBOFLOW_API_KEY")
+    workspace = data.get("roboflow_workspace") or os.environ.get("ROBOFLOW_WORKSPACE")
+    workflow_id = data.get("roboflow_workflow_id") or os.environ.get("ROBOFLOW_WORKFLOW_ID")
+
     return RuntimeConfig(
         backend=str(data.get("backend", "ultralytics")),
         model_path=model_path,
+        model_paths=model_paths,
         confidence=float(data.get("confidence", 0.35)),
         iou=float(data.get("iou", 0.45)),
         target_label=data.get("target_label"),
@@ -116,6 +160,16 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         diff_threshold=float(data.get("diff_threshold", 55.0)),
         api_host=str(data.get("api_host", "0.0.0.0")),
         api_port=int(data.get("api_port", 9002)),
+        roboflow_api_url=str(
+            data.get("roboflow_api_url")
+            or os.environ.get("ROBOFLOW_API_URL")
+            or "https://detect.roboflow.com"
+        ),
+        roboflow_api_key=str(api_key) if api_key else None,
+        roboflow_workspace=str(workspace) if workspace else None,
+        roboflow_workflow_id=str(workflow_id) if workflow_id else None,
+        ensemble_iou=float(data.get("ensemble_iou", 0.45)),
+        ensemble_solo_confidence=float(data.get("ensemble_solo_confidence", 0.55)),
     )
 
 

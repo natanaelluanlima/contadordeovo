@@ -11,4 +11,4 @@ def test_load_named_video_profile() -> None:
     camera, runtime = load_named_video_profile("testes")
     assert camera.width == 848
     assert camera.height == 478
-    assert runtime.match_distance == 100.0
+    assert runtime.match_distance == 110.0

@@ -47,11 +47,15 @@ def create_app(session: ProcessadorSession) -> FastAPI:
     @router.post("/v1/session/frame-b64")
     def session_frame_b64(body: FrameB64Request) -> dict[str, Any]:
         try:
+            if not body.image_b64 or not str(body.image_b64).strip():
+                raise ValueError("image_b64 vazio.")
             return session.process_frame_b64(body.image_b64)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"Falha ao processar frame: {exc}") from exc
 
     app.include_router(router)
     return app

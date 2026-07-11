@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.110",
+  "inference-sdk>=0.9",
   "numpy>=1.26",
   "opencv-python>=4.9",
   "pydantic>=2.6",
@@ -27,6 +28,8 @@ dev = [
 [project.scripts]
 egg-counter = "egg_counter.main:main"
 egg-processador = "egg_counter.processador_main:main"
+egg-dataset = "egg_counter.dataset:main"
+egg-train = "egg_counter.train:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
