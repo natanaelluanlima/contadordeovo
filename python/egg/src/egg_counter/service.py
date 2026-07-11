@@ -96,6 +96,8 @@ class EggCounterService:
             and list(self.runtime.model_paths) == list(runtime.model_paths)
             and self.runtime.confidence == runtime.confidence
             and self.runtime.iou == runtime.iou
+            and self.runtime.imgsz == runtime.imgsz
+            and self.runtime.device == runtime.device
             and self.runtime.target_label == runtime.target_label
             and self.runtime.ensemble_iou == runtime.ensemble_iou
             and self.runtime.ensemble_solo_confidence == runtime.ensemble_solo_confidence
@@ -145,18 +147,8 @@ class EggCounterService:
         self._update_fps(started_at)
         self._last_tracked = result.tracked_objects
 
-        # Encode annotated JPEG sparsely — UI uses live video + track overlays
-        self._annotate_counter += 1
-        if self._annotate_counter == 1 or self._annotate_counter % _ANNOTATE_EVERY_N == 0:
-            debug_frame = self._draw_debug_frame(
-                frame,
-                result.tracked_objects,
-                result.events,
-                preview_scale=_PREVIEW_SCALE,
-            )
-            self._last_annotated_frame_b64 = _encode_frame_b64(
-                debug_frame, quality=_PREVIEW_JPEG_QUALITY
-            )
+        # UI desenha overlays no video ao vivo — nao reenvia JPEG anotado (caro no CPU/rede).
+        self._last_annotated_frame_b64 = None
         return self._build_frame_result(result.events, result.tracked_objects, frame.shape)
 
     def process_stream(self, max_frames: int | None = None, display: bool = True) -> None:

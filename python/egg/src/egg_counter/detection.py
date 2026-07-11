@@ -68,12 +68,16 @@ class UltralyticsBackend(InferenceBackend):
         self._model_names = self.model.names
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        results = self.model.predict(
-            source=frame,
-            conf=self.runtime.confidence,
-            iou=self.runtime.iou,
-            verbose=False,
-        )
+        predict_kwargs: dict[str, Any] = {
+            "source": frame,
+            "conf": self.runtime.confidence,
+            "iou": self.runtime.iou,
+            "imgsz": self.runtime.imgsz,
+            "verbose": False,
+        }
+        if self.runtime.device:
+            predict_kwargs["device"] = self.runtime.device
+        results = self.model.predict(**predict_kwargs)
 
         detections: list[Detection] = []
         for result in results:
@@ -145,12 +149,16 @@ class EnsembleBackend(InferenceBackend):
     def detect(self, frame: np.ndarray) -> list[Detection]:
         per_model: list[list[Detection]] = []
         for model in self.models:
-            results = model.predict(
-                source=frame,
-                conf=max(0.15, self.runtime.confidence * 0.7),
-                iou=self.runtime.iou,
-                verbose=False,
-            )
+            predict_kwargs: dict[str, Any] = {
+                "source": frame,
+                "conf": max(0.15, self.runtime.confidence * 0.7),
+                "iou": self.runtime.iou,
+                "imgsz": self.runtime.imgsz,
+                "verbose": False,
+            }
+            if self.runtime.device:
+                predict_kwargs["device"] = self.runtime.device
+            results = model.predict(**predict_kwargs)
             detections: list[Detection] = []
             for result in results:
                 boxes = getattr(result, "boxes", None)
@@ -1650,38 +1658,14 @@ class Detector:
     def __init__(self, runtime: RuntimeConfig) -> None:
         self.runtime = runtime
         self.backend = self._build_backend(runtime)
-        self._classic_fallback: ClassicBackend | None = None
-        if runtime.backend in {"ultralytics", "roboflow", "ensemble"}:
-            # Filtros de furo/esteira sobre deteccoes do modelo
-            self._classic_fallback = ClassicBackend(
-                RuntimeConfig(
-                    backend="classic",
-                    normalize=runtime.normalize,
-                    reference_image=runtime.reference_image,
-                    diff_threshold=runtime.diff_threshold,
-                )
-            )
 
     def detect(self, frame: np.ndarray, offset: tuple[int, int] = (0, 0)) -> list[Detection]:
         detections = self.backend.detect(frame)
         detections = [_normalize_egg_label(det) for det in detections]
-
-        classic = self._classic_fallback
-        if classic is not None:
-            # Prefer YOLO trained on this belt; classic only fills high-quality misses
-            hole_radius = classic._estimate_hole_radius(frame)
-            yolo_keep = [
-                det
-                for det in detections
-                if det.confidence >= max(0.28, self.runtime.confidence * 0.85)
-                and self._is_clean_egg_box(frame, det.bbox, classic, hole_radius)
-            ]
-            yolo_keep = self._split_merged_egg_boxes(frame, yolo_keep, classic, hole_radius)
-            # Do not merge classic: it reintroduces belt-hole / empty-belt FPs
-            detections = self._nms_detections(yolo_keep, overlap_threshold=0.35)
-        else:
-            detections = self._filter_tiny(detections, frame)
-
+        # Confia no modelo YOLO/ensemble/roboflow: heuristicas de cor/furo/split
+        # rejeitavam ovos reais na esteira perfurada.
+        if self.runtime.backend != "classic":
+            detections = self._nms_detections(detections, overlap_threshold=0.45)
         detections = self._filter_tiny(detections, frame)
 
         if offset == (0, 0):
@@ -1699,20 +1683,6 @@ class Detector:
                 )
             )
         return translated
-
-    @staticmethod
-    def _is_clean_egg_box(
-        frame: np.ndarray,
-        bbox: tuple[int, int, int, int],
-        classic: ClassicBackend,
-        hole_radius: float,
-    ) -> bool:
-        return (
-            not classic._looks_like_belt_hole(frame, bbox, hole_radius)
-            and not classic._is_perforated_belt_patch(frame, bbox)
-            and classic._has_solid_egg_fill(frame, bbox)
-            and classic._has_egg_body_color(frame, bbox)
-        )
 
     @staticmethod
     def _filter_tiny(detections: list[Detection], frame: np.ndarray) -> list[Detection]:
@@ -1740,39 +1710,6 @@ class Detector:
             if not redundant:
                 kept.append(candidate)
         return kept
-
-    def _split_merged_egg_boxes(
-        self,
-        frame: np.ndarray,
-        detections: list[Detection],
-        classic: ClassicBackend,
-        hole_radius: float,
-    ) -> list[Detection]:
-        """Split oversized boxes that likely cover two touching eggs."""
-        typical = classic._min_egg_dimension(hole_radius)
-        split: list[Detection] = []
-        for det in detections:
-            x1, y1, x2, y2 = det.bbox
-            width = x2 - x1
-            height = y2 - y1
-            parts: list[tuple[int, int, int, int]] = []
-            if width >= typical * 1.4 and width / max(1.0, height) >= 1.15:
-                mid = (x1 + x2) // 2
-                parts = [(x1, y1, mid, y2), (mid, y1, x2, y2)]
-            elif height >= typical * 1.55 and height / max(1.0, width) >= 1.25:
-                mid = (y1 + y2) // 2
-                parts = [(x1, y1, x2, mid), (x1, mid, x2, y2)]
-            else:
-                split.append(det)
-                continue
-
-            kept = [
-                Detection(bbox=part, confidence=det.confidence * 0.95, label=det.label)
-                for part in parts
-                if self._is_clean_egg_box(frame, part, classic, hole_radius)
-            ]
-            split.extend(kept if len(kept) >= 2 else [det])
-        return split
 
     def _build_backend(self, runtime: RuntimeConfig) -> InferenceBackend:
         if runtime.backend == "classic":

@@ -1,0 +1,19 @@
+# Opcional: ensemble Colab best_v1 + best_v2 (mais lento no CPU)
+# Para usar: copiar para runtime.yaml ou apontar --runtime-config
+backend: ensemble
+model_path: models/best_v2.pt
+model_paths:
+  - models/best_v1.pt
+  - models/best_v2.pt
+confidence: 0.30
+iou: 0.45
+ensemble_iou: 0.45
+ensemble_solo_confidence: 0.55
+target_label: egg
+reference_image: config/reference-video-testes.jpg
+diff_threshold: 55
+match_distance: 110.0
+max_missing: 22
+normalize: false
+api_host: 0.0.0.0
+api_port: 9002

@@ -77,6 +77,9 @@ class RuntimeConfig:
     roboflow_workflow_id: str | None = None
     ensemble_iou: float = 0.45
     ensemble_solo_confidence: float = 0.55
+    # Inferencia mais rapida no CPU; 416 mantem recall bom nos ovos da esteira.
+    imgsz: int = 416
+    device: str | None = None
 
 
 def load_named_video_profile(name: str, config_dir: str | Path = "config") -> tuple[CameraConfig, RuntimeConfig]:
@@ -170,6 +173,8 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         roboflow_workflow_id=str(workflow_id) if workflow_id else None,
         ensemble_iou=float(data.get("ensemble_iou", 0.45)),
         ensemble_solo_confidence=float(data.get("ensemble_solo_confidence", 0.55)),
+        imgsz=int(data.get("imgsz", 416)),
+        device=str(data["device"]) if data.get("device") not in (None, "") else None,
     )
 
 

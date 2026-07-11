@@ -78,10 +78,12 @@ function writeStoredLote(digits: string, siglas: string) {
   localStorage.setItem(LOTE_STORAGE_KEY, JSON.stringify({ digits, siglas }));
 }
 
-const MAX_CAPTURE_WIDTH = 960;
-const UPLOAD_JPEG_QUALITY = 0.68;
-const MIN_FRAME_INTERVAL_MS = 45;
-const VIDEO_SAMPLE_SECONDS = 0.033;
+const MAX_CAPTURE_WIDTH = 640;
+const UPLOAD_JPEG_QUALITY = 0.62;
+// Alvo ~10–12 fps (bate com YOLO CPU ~50ms). Video e camera rodam em tempo real;
+// frames atrasados sao descartados em vez de frear o playback.
+const MIN_FRAME_INTERVAL_MS = 90;
+const VIDEO_SAMPLE_SECONDS = 0.09;
 const BOX_LERP_MS = 35;
 
 type SmoothTrack = ContagemTrack & {
@@ -916,14 +918,6 @@ export function ContagemDemoScreen() {
 
     const sendFrame = async (imageB64: string, capturedVideoTime: number) => {
       frameProcessingRef.current = true;
-      const video = videoRef.current;
-      const isUploadedVideo = Boolean(videoFileNameRef.current);
-      const startedAt = performance.now();
-
-      // Com ensemble (2 modelos), o processamento e mais lento: segura o video.
-      if (isUploadedVideo && video && !video.paused && !video.ended) {
-        video.playbackRate = 0.45;
-      }
 
       try {
         const data = await enviarFrameBase64(imageB64);
@@ -955,14 +949,6 @@ export function ContagemDemoScreen() {
         lastProcessedVideoTimeRef.current = capturedVideoTime;
         setStatus(data);
         updateProcessorOverlay(data);
-
-        if (isUploadedVideo && video) {
-          const elapsed = performance.now() - startedAt;
-          const lag = video.currentTime - lastProcessedVideoTimeRef.current;
-          // Sincroniza taxa de play com tempo real do processador
-          const targetRate = Math.min(1, Math.max(0.35, 280 / Math.max(180, elapsed)));
-          video.playbackRate = lag > 0.35 ? Math.min(targetRate, 0.5) : targetRate;
-        }
       } catch (e) {
         const message = e instanceof Error ? e.message : "Falha ao enviar frame";
         const isConflict = /409|sessao|sessão|skipped/i.test(message);
@@ -979,7 +965,6 @@ export function ContagemDemoScreen() {
               sessionRecovering = false;
             }
           }
-          // Nao mostra erro vermelho de 409 — e corrida de sessao, nao falha fatal.
           return;
         }
         setError(message);
@@ -989,22 +974,25 @@ export function ContagemDemoScreen() {
         pendingFrameRef.current = null;
         if (pending && countingLoopActiveRef.current) {
           void sendFrame(pending.imageB64, pending.videoTime);
-        } else if (isUploadedVideo && video && countingLoopActiveRef.current && !video.ended) {
-          // Restaura ritmo quando a fila esvazia
-          if (video.playbackRate < 0.85) {
-            video.playbackRate = Math.min(1, video.playbackRate + 0.15);
-          }
         }
       }
     };
 
-    const runCountingLoop = async () => {
+    const shouldSampleNow = (video: HTMLVideoElement, now: number) => {
+      if (videoFileNameRef.current) {
+        if (lastProcessedVideoTimeRef.current <= 0) return true;
+        return video.currentTime - lastProcessedVideoTimeRef.current >= VIDEO_SAMPLE_SECONDS;
+      }
+      return now - lastFrameSentAtRef.current >= MIN_FRAME_INTERVAL_MS;
+    };
+
+    const runCountingLoop = () => {
       if (!countingLoopActiveRef.current) return;
 
       const video = videoRef.current;
       const canvas = captureCanvasRef.current;
       if (!video || !canvas || video.readyState < 2) {
-        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+        loopRef.current = requestAnimationFrame(runCountingLoop);
         return;
       }
 
@@ -1013,40 +1001,35 @@ export function ContagemDemoScreen() {
         return;
       }
 
-      const now = performance.now();
-      const isUploadedVideo = Boolean(videoFileNameRef.current);
-
-      // Enquanto processa, nao captura novos frames do video — evita backlog/409.
-      if (frameProcessingRef.current) {
-        if (isUploadedVideo && !video.paused && !video.ended) {
-          video.playbackRate = Math.min(video.playbackRate, 0.4);
-        }
-        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
-        return;
+      // Playback sempre em velocidade normal (video gravado e camera ao vivo).
+      if (videoFileNameRef.current && video.playbackRate !== 1) {
+        video.playbackRate = 1;
       }
 
-      if (isUploadedVideo) {
-        const videoDelta = video.currentTime - lastProcessedVideoTimeRef.current;
-        if (videoDelta < VIDEO_SAMPLE_SECONDS && lastProcessedVideoTimeRef.current > 0) {
-          loopRef.current = requestAnimationFrame(() => void runCountingLoop());
-          return;
-        }
-      } else if (now - lastFrameSentAtRef.current < MIN_FRAME_INTERVAL_MS) {
-        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+      const now = performance.now();
+      if (!shouldSampleNow(video, now)) {
+        loopRef.current = requestAnimationFrame(runCountingLoop);
         return;
       }
 
       const capturedVideoTime = video.currentTime;
       const imageB64 = captureFrameBase64(video, canvas);
       if (!imageB64) {
-        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+        loopRef.current = requestAnimationFrame(runCountingLoop);
         return;
       }
 
-      await sendFrame(imageB64, capturedVideoTime);
-      if (countingLoopActiveRef.current) {
-        loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+      // Processador ocupado: guarda so o frame mais recente (drop backlog).
+      // Video/camera continuam em tempo real — nao freia o play.
+      if (frameProcessingRef.current) {
+        pendingFrameRef.current = { imageB64, videoTime: capturedVideoTime };
+        lastProcessedVideoTimeRef.current = capturedVideoTime;
+        loopRef.current = requestAnimationFrame(runCountingLoop);
+        return;
       }
+
+      void sendFrame(imageB64, capturedVideoTime);
+      loopRef.current = requestAnimationFrame(runCountingLoop);
     };
 
     countingLoopActiveRef.current = true;
@@ -1054,7 +1037,10 @@ export function ContagemDemoScreen() {
     pendingFrameRef.current = null;
     lastFrameSentAtRef.current = 0;
     lastProcessedVideoTimeRef.current = 0;
-    loopRef.current = requestAnimationFrame(() => void runCountingLoop());
+    if (videoRef.current) {
+      videoRef.current.playbackRate = 1;
+    }
+    loopRef.current = requestAnimationFrame(runCountingLoop);
   }, [handleVideoEnded, updateProcessorOverlay]);
 
   const connectCamera = useCallback(

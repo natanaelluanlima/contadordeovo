@@ -1,13 +1,10 @@
-# Runtime VIDEO PADRAO — ensemble Colab v1+v2
-backend: ensemble
-model_path: models/best_v2.pt
-model_paths:
-  - models/best_v1.pt
-  - models/best_v2.pt
-confidence: 0.30
+# Runtime VIDEO PADRAO
+backend: ultralytics
+model_path: models/egg_yolov8n_eggselect.pt
+confidence: 0.35
 iou: 0.45
-ensemble_iou: 0.45
-ensemble_solo_confidence: 0.55
+imgsz: 416
+
 target_label: egg
 reference_image: config/reference-video-padrao.jpg
 diff_threshold: 55
